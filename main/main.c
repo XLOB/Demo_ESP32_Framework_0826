@@ -91,6 +91,9 @@ void app_main(void)
     key->ops->init(key->data);
 
     // 循环读取按键状态，并根据按键状态控制 WS2812B 的颜色`
+    int key_last_state = 1;
+    int key_pressed = 0;
+
     int color_index = 0;
 
     uint8_t red[3] = {255, 0, 0};
@@ -103,14 +106,20 @@ void app_main(void)
         int key_state = 0;
         key->ops->read(key->data, &key_state, sizeof(key_state));
 
-        if (key_state == 0)
+        // 检测按下沿
+        if (key_last_state == 1 && key_state == 0)
         {
-            vTaskDelay(pdMS_TO_TICKS(30));
-            key->ops->read(key->data, &key_state, sizeof(key_state));
+            key_pressed = 1;
+        }
 
-            if (key_state == 0)
+        // 检测松开沿
+        if (key_last_state == 0 && key_state == 1)
+        {
+            if (key_pressed)
             {
                 color_index = (color_index + 1) % 4;
+
+                ESP_LOGI("app", "按键按下，切换到颜色索引：%d", color_index);
 
                 if (color_index == 0)
                 {
@@ -129,17 +138,12 @@ void app_main(void)
                     ws2812b->ops->write(ws2812b->data, off, sizeof(off));
                 }
 
-                // 等待松开，防止一次按下触发多次
-                while (1)
-                {
-                    int release_state = 0;
-                    key->ops->read(key->data, &release_state, sizeof(release_state));
-                    if (release_state == 1)
-                        break;
-                    vTaskDelay(pdMS_TO_TICKS(20));
-                }
+                key_pressed = 0;
             }
         }
+
+        // 更新上次状态
+        key_last_state = key_state;
 
         vTaskDelay(pdMS_TO_TICKS(20));
     }
