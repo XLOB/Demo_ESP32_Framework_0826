@@ -5,5 +5,6 @@ idf_component_register(
         "drivers/sensor.c"
         "drivers/led.c"
         "drivers/ws2812b.c"
+        "drivers/key.c"
     INCLUDE_DIRS "."
 )

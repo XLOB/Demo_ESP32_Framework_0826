@@ -1,10 +1,13 @@
 #include <stdio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h> // 提供 vTaskDelay
 
 #include "framework/framework.h"
 #include "drivers/sensor.h"
 #include "drivers/led.h"
 #include "drivers/ws2812b.h"
 #include "esp_log.h"
+#include "drivers/key.h"
 
 void app_main(void)
 {
@@ -29,6 +32,14 @@ void app_main(void)
     if (device_register(ws2812b_dev) != 0)
     {
         ESP_LOGE("app", "WS2812B 注册失败");
+        return;
+    }
+
+    // 4. 注册按键设备
+    struct Device *key_dev = Key_get_device();
+    if (device_register(key_dev) != 0)
+    {
+        ESP_LOGE("app", "按键注册失败");
         return;
     }
 
@@ -70,14 +81,66 @@ void app_main(void)
     }
     ws2812b->ops->init(ws2812b->data);
 
-    // 设置红色：RGB = 255, 0, 0
-    uint8_t red_color[3] = {255, 0, 0};
-    ws2812b->ops->write(ws2812b->data, red_color, sizeof(red_color));
+    // 初始化按键设备
+    struct Device *key = device_find("key_a");
+    if (key == 0)
+    {
+        ESP_LOGE("app", "未找到按键");
+        return;
+    }
+    key->ops->init(key->data);
 
-    // 读回当前颜色
-    uint8_t current_color[3] = {0};
-    ws2812b->ops->read(ws2812b->data, current_color, sizeof(current_color));
+    // 循环读取按键状态，并根据按键状态控制 WS2812B 的颜色`
+    int color_index = 0;
 
-    ESP_LOGI("app", "WS2812B 颜色：R=%d G=%d B=%d",
-             current_color[0], current_color[1], current_color[2]);
+    uint8_t red[3] = {255, 0, 0};
+    uint8_t green[3] = {0, 255, 0};
+    uint8_t blue[3] = {0, 0, 255};
+    uint8_t off[3] = {0, 0, 0};
+
+    while (1)
+    {
+        int key_state = 0;
+        key->ops->read(key->data, &key_state, sizeof(key_state));
+
+        if (key_state == 0)
+        {
+            vTaskDelay(pdMS_TO_TICKS(30));
+            key->ops->read(key->data, &key_state, sizeof(key_state));
+
+            if (key_state == 0)
+            {
+                color_index = (color_index + 1) % 4;
+
+                if (color_index == 0)
+                {
+                    ws2812b->ops->write(ws2812b->data, red, sizeof(red));
+                }
+                else if (color_index == 1)
+                {
+                    ws2812b->ops->write(ws2812b->data, green, sizeof(green));
+                }
+                else if (color_index == 2)
+                {
+                    ws2812b->ops->write(ws2812b->data, blue, sizeof(blue));
+                }
+                else
+                {
+                    ws2812b->ops->write(ws2812b->data, off, sizeof(off));
+                }
+
+                // 等待松开，防止一次按下触发多次
+                while (1)
+                {
+                    int release_state = 0;
+                    key->ops->read(key->data, &release_state, sizeof(release_state));
+                    if (release_state == 1)
+                        break;
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
