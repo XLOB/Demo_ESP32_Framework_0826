@@ -16,6 +16,7 @@ static struct Key g_key;
 static int key_init(void *self)
 {
     struct Key *key = (struct Key *)self;
+    key->on_pressed = NULL; // 默认没有回调函数
 
     // 设置这个按键对应的 GPIO
     key->gpio_num = 46;
@@ -105,4 +106,45 @@ static struct Device g_key_device = {
 struct Device *Key_get_device(void)
 {
     return &g_key_device;
+}
+
+void Key_set_callback(struct Device *dev, key_event_cb_t cb)
+{
+    if (dev == NULL)
+        return;
+
+    struct Key *key = (struct Key *)dev->data;
+    key->on_pressed = cb;
+}
+
+void Key_poll(struct Device *dev)
+{
+    if (dev == NULL)
+        return;
+
+    struct Key *key = (struct Key *)dev->data;
+
+    int cur = gpio_get_level(key->gpio_num);
+
+    if (cur == 0 && key->state == 1)
+    {
+        // 检测到按下沿
+        key->pressed = 1;
+    }
+
+    if (cur == 1 && key->state == 0)
+    {
+        // 检测到松开沿
+        if (key->pressed)
+        {
+            if (key->on_pressed)
+            {
+                key->on_pressed(); // 调用回调
+            }
+
+            key->pressed = 0;
+        }
+    }
+
+    key->state = cur;
 }
