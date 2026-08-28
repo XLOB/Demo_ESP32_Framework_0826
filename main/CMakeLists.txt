@@ -6,5 +6,6 @@ idf_component_register(
         "drivers/led.c"
         "drivers/ws2812b.c"
         "drivers/key.c"
+        "framework/array.c"
     INCLUDE_DIRS "."
 )
