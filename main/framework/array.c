@@ -52,3 +52,26 @@ void array_free(struct Array *arr)
     arr->size = 0;
     arr->capacity = 0;
 }
+
+int array_remove(struct Array *arr, size_t index)
+{
+    if (index >= arr->size)
+        return -1;
+
+    size_t bytes_to_move = (arr->size - index - 1) * arr->element_size;
+
+    if (bytes_to_move > 0)
+    {
+        char *dest = (char *)arr->data + index * arr->element_size;
+        char *src = dest + arr->element_size;
+        memmove(dest, src, bytes_to_move);
+    }
+
+    arr->size--;
+    return 0;
+}
+
+void array_clear(struct Array *arr)
+{
+    arr->size = 0;
+}
