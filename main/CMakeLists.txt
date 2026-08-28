@@ -11,5 +11,13 @@ idf_component_register(
         "app/app_temp_task.c"
         "drivers/internal_temp.c"
         "app/app_led_task.c"
+        "drivers/sys_uptime.c"
+        "drivers/battery.c"
+    REQUIRES
+        esp_driver_gpio           # 提供 gpio.h
+        esp_driver_tsens          # 提供 temperature_sensor.h
+        esp_adc
+        driver
+        esp_timer
     INCLUDE_DIRS "."
 )
