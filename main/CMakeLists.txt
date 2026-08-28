@@ -13,7 +13,9 @@ idf_component_register(
         "app/app_led_task.c"
         "drivers/sys_uptime.c"
         "drivers/battery.c"
+        "drivers/display.c"
     REQUIRES
+        esp_lcd
         esp_driver_gpio           # 提供 gpio.h
         esp_driver_tsens          # 提供 temperature_sensor.h
         esp_adc

@@ -4,6 +4,7 @@
 #include "drivers/internal_temp.h"
 #include "drivers/battery.h"
 #include "drivers/sys_uptime.h"
+#include "drivers/display.h"
 
 #include "app/app_key_task.h"
 #include "app/app_led_task.h"
@@ -24,6 +25,7 @@ void app_main(void)
     device_register(InternalTemp_get_device());
     device_register(SysUptime_get_device());
     device_register(Battery_get_device());
+    device_register(Display_get_device());
 
     // 创建队列
     key_queue = xQueueCreate(10, sizeof(int));
@@ -43,4 +45,14 @@ void app_main(void)
     battery->ops->read(battery->data, &info, sizeof(info));
 
     ESP_LOGI("app", "电池电压：%dmV，电量：%d%%", info.voltage_mv, info.percent);
+
+    ////////////////////////////////////////////////////////////////////////////////
+
+    // 查找并初始化
+    struct Device *display = device_find("display");
+    if (display && display->ops && display->ops->init)
+        display->ops->init(display->data);
+
+    // 调 write 让屏幕变红
+    display->ops->write(display->data, NULL, 0);
 }
