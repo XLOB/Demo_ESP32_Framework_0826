@@ -46,3 +46,13 @@ void list_append(struct list_head *head, struct list_head *new_node)
     head->prev->next = new_node;
     head->prev = new_node;
 }
+
+void list_del(struct list_head *item)
+{
+    item->prev->next = item->next;
+    item->next->prev = item->prev;
+
+    // 可选：把 item 自己重置为独立节点，防止之后误用
+    item->next = item;
+    item->prev = item;
+}

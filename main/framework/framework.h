@@ -39,5 +39,8 @@ struct Device *device_find(const char *name);
 
 // 常用函数
 void list_append(struct list_head *head, struct list_head *new_node);
+void list_del(struct list_head *item);
+#define list_for_each(pos, head) \
+    for (pos = (head)->next; pos != (head); pos = pos->next)
 
 #endif
