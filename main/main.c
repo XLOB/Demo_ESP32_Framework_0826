@@ -1,167 +1,25 @@
-#include <stdio.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h> // 提供 vTaskDelay
-
-#include "framework/framework.h"
-#include "drivers/sensor.h"
-#include "drivers/led.h"
-#include "drivers/ws2812b.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
-#include "drivers/key.h"
-#include "framework/array.h"
+#include "framework/framework.h"
+
+#include "drivers/internal_temp.h"
 
 void app_main(void)
 {
-    /*
-    // // 1. 注册传感器
-    // struct Device *sensor_dev = VirtualSensor_get_device();
-    // if (device_register(sensor_dev) != 0)
-    // {
-    //     ESP_LOGE("app", "传感器注册失败");
-    //     return;
-    // }
+    // 注册
+    device_register(InternalTemp_get_device());
 
-    // // 2. 注册虚拟 LED（示例驱动，保留）
-    // struct Device *led_dev = Led_get_device();
-    // if (device_register(led_dev) != 0)
-    // {
-    //     ESP_LOGE("app", "虚拟 LED 注册失败");
-    //     return;
-    // }
+    // 找到设备
+    struct Device *dev = device_find("internal_temp");
 
-    // // 3. 注册真实 WS2812B
-    // struct Device *ws2812b_dev = Ws2812b_get_device();
-    // if (device_register(ws2812b_dev) != 0)
-    // {
-    //     ESP_LOGE("app", "WS2812B 注册失败");
-    //     return;
-    // }
+    if (dev && dev->ops && dev->ops->init)
+        dev->ops->init(dev->data);
 
-    // // 4. 注册按键设备
-    // struct Device *key_dev = Key_get_device();
-    // if (device_register(key_dev) != 0)
-    // {
-    //     ESP_LOGE("app", "按键注册失败");
-    //     return;
-    // }
+    float temp = 0.0f;
+    dev->ops->read(dev->data, &temp, sizeof(temp));
 
-    // // 4. 初始化并读取传感器
-    // struct Device *sensor = device_find("temp_sensor");
-    // if (sensor == 0)
-    // {
-    //     ESP_LOGE("app", "未找到传感器");
-    //     return;
-    // }
-    // sensor->ops->init(sensor->data);
+    ESP_LOGI("app", "内部温度：%.2f °C", temp);
 
-    // int temp = 0;
-    // sensor->ops->read(sensor->data, &temp, sizeof(temp));
-    // ESP_LOGI("app", "传感器值：%d", temp);
-
-    // // 5. 使用虚拟 LED
-    // struct Device *led = device_find("led");
-    // if (led == 0)
-    // {
-    //     ESP_LOGE("app", "未找到虚拟 LED");
-    //     return;
-    // }
-    // led->ops->init(led->data);
-
-    // int state = 1;
-    // led->ops->write(led->data, &state, sizeof(state));
-
-    // int read_state = 0;
-    // led->ops->read(led->data, &read_state, sizeof(read_state));
-    // ESP_LOGI("app", "虚拟 LED 状态：%d", read_state);
-
-    // // 6. 初始化并控制真实 WS2812B
-    // struct Device *ws2812b = device_find("ws2812b");
-    // if (ws2812b == 0)
-    // {
-    //     ESP_LOGE("app", "未找到 WS2812B");
-    //     return;
-    // }
-    // ws2812b->ops->init(ws2812b->data);
-
-    // // 初始化按键设备
-    // struct Device *key = device_find("key_a");
-    // if (key == 0)
-    // {
-    //     ESP_LOGE("app", "未找到按键");
-    //     return;
-    // }
-    // key->ops->init(key->data);
-
-    // // 循环读取按键状态，并根据按键状态控制 WS2812B 的颜色`
-    // int key_last_state = 1;
-    // int key_pressed = 0;
-
-    // int color_index = 0;
-
-    // uint8_t red[3] = {255, 0, 0};
-    // uint8_t green[3] = {0, 255, 0};
-    // uint8_t blue[3] = {0, 0, 255};
-    // uint8_t off[3] = {0, 0, 0};
-
-    // while (1)
-    // {
-    //     int key_state = 0;
-    //     key->ops->read(key->data, &key_state, sizeof(key_state));
-
-    //     // 检测按下沿
-    //     if (key_last_state == 1 && key_state == 0)
-    //     {
-    //         key_pressed = 1;
-    //     }
-
-    //     // 检测松开沿
-    //     if (key_last_state == 0 && key_state == 1)
-    //     {
-    //         if (key_pressed)
-    //         {
-    //             color_index = (color_index + 1) % 4;
-
-    //             ESP_LOGI("app", "按键按下，切换到颜色索引：%d", color_index);
-
-    //             if (color_index == 0)
-    //             {
-    //                 ws2812b->ops->write(ws2812b->data, red, sizeof(red));
-    //             }
-    //             else if (color_index == 1)
-    //             {
-    //                 ws2812b->ops->write(ws2812b->data, green, sizeof(green));
-    //             }
-    //             else if (color_index == 2)
-    //             {
-    //                 ws2812b->ops->write(ws2812b->data, blue, sizeof(blue));
-    //             }
-    //             else
-    //             {
-    //                 ws2812b->ops->write(ws2812b->data, off, sizeof(off));
-    //             }
-
-    //             key_pressed = 0;
-    //         }
-    //     }
-
-    //     // 更新上次状态
-    //     key_last_state = key_state;
-
-    //     vTaskDelay(pdMS_TO_TICKS(20));
-    // } */
-    struct Array arr;
-    array_init(&arr, sizeof(int));
-    for (int i = 0; i < 10; ++i)
-    {
-        array_push_back(&arr, &i);
-    }
-
-    for (size_t i = 0; i < array_size(&arr); ++i)
-    {
-        int value;
-        array_get(&arr, i, &value);
-        ESP_LOGI("app", "Array[%zu] = %d", i, value);
-    }
-
-    array_free(&arr);
+    // 其他任务...
 }

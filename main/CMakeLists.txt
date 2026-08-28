@@ -7,5 +7,8 @@ idf_component_register(
         "drivers/ws2812b.c"
         "drivers/key.c"
         "framework/array.c"
+        "app/app_key.c"
+        "app/app_temp.c"
+        "drivers/internal_temp.c"
     INCLUDE_DIRS "."
 )
