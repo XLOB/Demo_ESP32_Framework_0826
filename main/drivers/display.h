@@ -11,6 +11,7 @@ struct Display
     esp_lcd_panel_handle_t panel_handle;
     int width;
     int height;
+    uint16_t *line_buffer; // 预分配的行缓冲（用于绘制）
 };
 
 struct Device *Display_get_device(void);

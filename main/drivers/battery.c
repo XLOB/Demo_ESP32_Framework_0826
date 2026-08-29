@@ -7,31 +7,43 @@
 
 static const char *TAG = "battery";
 
-// ADC 句柄和校准句柄
-static adc_oneshot_unit_handle_t adc1_handle;
-static adc_cali_handle_t cali_handle = NULL;
-
 static struct Battery g_battery;
 
 #define BATTERY_ADC_UNIT ADC_UNIT_2
-#define BATTERY_ADC_CHANNEL ADC_CHANNEL_7 // 需要根据 GPIO18 实际对应调整
+#define BATTERY_ADC_CHANNEL ADC_CHANNEL_7 // 根据实际硬件调整
+#define BATTERY_DIVIDER_RATIO 2           // 分压比
 
 static int battery_init(void *self)
 {
     struct Battery *battery = (struct Battery *)self;
 
+    // 初始化参数
+    battery->voltage_divider_ratio = BATTERY_DIVIDER_RATIO;
+    battery->voltage_mv = 0;
+    battery->percent = 0;
+
     // 1. 创建 ADC oneshot 单元
     adc_oneshot_unit_init_cfg_t init_cfg = {
         .unit_id = BATTERY_ADC_UNIT,
     };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc1_handle));
+    esp_err_t ret = adc_oneshot_new_unit(&init_cfg, &battery->adc_handle);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "ADC unit init failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
 
     // 2. 配置 ADC 通道
     adc_oneshot_chan_cfg_t chan_cfg = {
         .atten = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, BATTERY_ADC_CHANNEL, &chan_cfg));
+    ret = adc_oneshot_config_channel(battery->adc_handle, BATTERY_ADC_CHANNEL, &chan_cfg);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "ADC channel config failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
 
     // 3. 尝试创建校准句柄
     adc_cali_curve_fitting_config_t cali_cfg = {
@@ -40,17 +52,14 @@ static int battery_init(void *self)
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
 
-    if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &cali_handle) != ESP_OK)
+    ret = adc_cali_create_scheme_curve_fitting(&cali_cfg, &battery->cali_handle);
+    if (ret != ESP_OK)
     {
-        cali_handle = NULL;
-        ESP_LOGW(TAG, "ADC 校准失败，将使用原始值");
+        battery->cali_handle = NULL;
+        ESP_LOGW(TAG, "ADC calibration failed, using raw values");
     }
 
-    battery->voltage_mv = 0;
-    battery->percent = 0;
-
     ESP_LOGI(TAG, "电池 ADC 初始化完成");
-
     return 0;
 }
 
@@ -62,13 +71,23 @@ static int battery_read(void *self, void *buf, size_t len)
         return -1;
 
     int raw = 0;
-    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, BATTERY_ADC_CHANNEL, &raw));
+    esp_err_t ret = adc_oneshot_read(battery->adc_handle, BATTERY_ADC_CHANNEL, &raw);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "ADC read failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
 
     int voltage_mv = 0;
 
-    if (cali_handle != NULL)
+    if (battery->cali_handle != NULL)
     {
-        adc_cali_raw_to_voltage(cali_handle, raw, &voltage_mv);
+        ret = adc_cali_raw_to_voltage(battery->cali_handle, raw, &voltage_mv);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "ADC calibration conversion failed: %s", esp_err_to_name(ret));
+            return -1;
+        }
     }
     else
     {
@@ -76,8 +95,8 @@ static int battery_read(void *self, void *buf, size_t len)
         voltage_mv = (raw * 3300) / 4095;
     }
 
-    // 假设分压比是 2:1，也就是电池电压是 ADC 电压的 2 倍
-    int battery_mv = voltage_mv * 2;
+    // 应用分压比
+    int battery_mv = voltage_mv * battery->voltage_divider_ratio;
 
     battery->voltage_mv = battery_mv;
 
@@ -101,16 +120,18 @@ static int battery_write(void *self, const void *buf, size_t len)
 
 static int battery_deinit(void *self)
 {
-    if (adc1_handle)
+    struct Battery *battery = (struct Battery *)self;
+
+    if (battery->adc_handle)
     {
-        adc_oneshot_del_unit(adc1_handle);
-        adc1_handle = NULL;
+        adc_oneshot_del_unit(battery->adc_handle);
+        battery->adc_handle = NULL;
     }
 
-    if (cali_handle)
+    if (battery->cali_handle)
     {
-        adc_cali_delete_scheme_curve_fitting(cali_handle);
-        cali_handle = NULL;
+        adc_cali_delete_scheme_curve_fitting(battery->cali_handle);
+        battery->cali_handle = NULL;
     }
 
     return 0;

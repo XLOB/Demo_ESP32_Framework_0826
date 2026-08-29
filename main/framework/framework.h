@@ -1,46 +1,105 @@
+/**
+ * @file framework.h
+ * @brief 设备框架核心头文件
+ *
+ * 提供统一的设备模型、链表管理、设备注册/查找/初始化接口。
+ * 所有设备驱动与应用层应基于此框架开发。
+ */
 #ifndef FRAMEWORK_H
 #define FRAMEWORK_H
 
 #include <stddef.h>
 
-// 通用链表节点
+/**
+ * @brief 通用双向链表节点
+ *
+ * 嵌入到需要链表管理的数据结构中，实现类似于 Linux 内核的链表。
+ */
 struct list_head
 {
-    struct list_head *next;
-    struct list_head *prev;
+    struct list_head *next; ///< 指向下一个节点
+    struct list_head *prev; ///< 指向前一个节点
 };
 
-// 从成员地址反推结构体地址
+/**
+ * @brief 通过成员指针获取包含该成员的结构体指针
+ * @param ptr   成员指针
+ * @param type  包含该成员的结构体类型
+ * @param member 成员在结构体中的名称
+ */
 #define container_of(ptr, type, member) \
     ((type *)((char *)(ptr) - offsetof(type, member)))
 
-// 设备操作表
+/**
+ * @brief 设备操作表
+ *
+ * 每个设备驱动必须实现此结构体中定义的函数指针，
+ * 以便框架统一调用。
+ */
 struct DeviceOps
 {
-    int (*init)(void *self);
-    int (*read)(void *self, void *buf, size_t len);
-    int (*write)(void *self, const void *buf, size_t len);
-    int (*deinit)(void *self);
+    int (*init)(void *self);                               ///< 初始化设备
+    int (*read)(void *self, void *buf, size_t len);        ///< 读设备
+    int (*write)(void *self, const void *buf, size_t len); ///< 写设备
+    int (*deinit)(void *self);                             ///< 反初始化设备
 };
 
-// 设备结构体
+/**
+ * @brief 设备结构体
+ *
+ * 描述一个具体设备，包含名称、私有数据、操作表以及链表节点。
+ * 所有设备应通过 device_register 注册到系统中。
+ */
 struct Device
 {
-    const char *name;
-    void *data;
-    const struct DeviceOps *ops;
-
-    struct list_head node; // 让设备变成链表节点
+    const char *name;            ///< 设备名称（唯一标识）
+    void *data;                  ///< 指向设备私有数据
+    const struct DeviceOps *ops; ///< 设备操作表指针
+    struct list_head node;       ///< 用于链表的节点
 };
 
-// 框架接口
+/**
+ * @brief 注册设备到全局设备链表
+ * @param dev 指向待注册设备的指针
+ * @return 0 成功；-1 失败（参数无效或设备名重复）
+ */
 int device_register(struct Device *dev);
+
+/**
+ * @brief 按名称查找设备
+ * @param name 设备名称
+ * @return 找到的设备指针；未找到返回 NULL
+ */
 struct Device *device_find(const char *name);
 
-// 常用函数
+/**
+ * @brief 初始化所有已注册设备
+ * @return 0 成功；-1 失败（链表互斥锁未创建）
+ *
+ * 遍历设备链表，对每个设备调用其 ops->init。
+ * 若某设备初始化失败，记录错误但继续初始化其他设备。
+ */
+int device_init_all(void);
+
+/**
+ * @brief 遍历所有已注册设备
+ * @param callback 回调函数，对每个设备调用一次
+ * @param arg      传递给回调函数的用户参数
+ *
+ * 回调函数原型：void callback(struct Device *dev, void *arg);
+ */
+void device_for_each(void (*callback)(struct Device *dev, void *arg), void *arg);
+
+/* 链表操作函数 */
 void list_append(struct list_head *head, struct list_head *new_node);
 void list_del(struct list_head *item);
+
+/**
+ * @brief 遍历链表宏
+ * @param pos  当前遍历到的节点指针
+ * @param head 链表头
+ */
 #define list_for_each(pos, head) \
     for (pos = (head)->next; pos != (head); pos = pos->next)
 
-#endif
+#endif // FRAMEWORK_H

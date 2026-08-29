@@ -20,7 +20,7 @@ static const char *TAG = "display";
 #define PIN_LCD_CS 15
 #define PIN_LCD_DC 14
 #define PIN_LCD_RST -1
-#define PIN_LCD_BL 16
+// 注意：背光由 backlight 驱动控制，此处不再定义 PIN_LCD_BL
 
 #define LCD_WIDTH 240
 #define LCD_HEIGHT 240
@@ -43,15 +43,7 @@ static int display_init(void *self)
 {
     struct Display *disp = (struct Display *)self;
 
-    // 1. 打开背光
-    gpio_config_t bl_conf = {
-        .pin_bit_mask = 1ULL << PIN_LCD_BL,
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&bl_conf);
-    gpio_set_level(PIN_LCD_BL, 1);
-
-    // 2. 初始化 SPI 总线
+    // 1. 初始化 SPI 总线
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = PIN_LCD_MOSI,
         .miso_io_num = -1,
@@ -62,13 +54,13 @@ static int display_init(void *self)
     };
     ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
 
-    // 3. 创建 LCD 面板 IO
+    // 2. 创建 LCD 面板 IO
     esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num = PIN_LCD_DC,
         .cs_gpio_num = PIN_LCD_CS,
         .spi_mode = 0,
-        .pclk_hz = 20 * 1000 * 1000, // 20MHz，稳定
+        .pclk_hz = 20 * 1000 * 1000, // 20MHz
         .trans_queue_depth = 10,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
@@ -77,7 +69,7 @@ static int display_init(void *self)
         (esp_lcd_spi_bus_handle_t)SPI3_HOST,
         &io_config, &io_handle));
 
-    // 4. 创建 ST7789 面板
+    // 3. 创建 ST7789 面板
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = PIN_LCD_RST,
         .bits_per_pixel = 16,
@@ -86,20 +78,27 @@ static int display_init(void *self)
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(
         io_handle, &panel_config, &disp->panel_handle));
 
-    // 5. 初始化面板
+    // 4. 初始化面板
     ESP_ERROR_CHECK(esp_lcd_panel_reset(disp->panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel_handle, true));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel_handle, true));
 
+    // 5. 预分配行缓冲
     disp->width = LCD_WIDTH;
     disp->height = LCD_HEIGHT;
+    disp->line_buffer = heap_caps_malloc(disp->width * sizeof(uint16_t), MALLOC_CAP_DMA);
+    if (disp->line_buffer == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to allocate line buffer");
+        return -1;
+    }
 
     ESP_LOGI(TAG, "屏幕初始化完成 (ST7789, RGB565, 240x240)");
     return 0;
 }
 
-// 内部填充矩形：所有写屏操作都经过这里，统一处理颜色交换和裁剪
+// 内部填充矩形：统一处理颜色交换和裁剪
 static void display_fill_rect_internal(struct Display *disp,
                                        int x, int y, int w, int h,
                                        uint16_t color)
@@ -125,31 +124,23 @@ static void display_fill_rect_internal(struct Display *disp,
     if (w <= 0 || h <= 0)
         return;
 
-    // DMA 行缓冲
-    uint16_t *line = heap_caps_malloc(w * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!line)
-    {
-        ESP_LOGE(TAG, "DMA 内存分配失败");
-        return;
-    }
-
+    // 填充行缓冲
     for (int i = 0; i < w; i++)
     {
-        line[i] = color;
+        disp->line_buffer[i] = color;
     }
 
+    // 设置窗口并逐行绘制
     for (int row = y; row < y + h; row++)
     {
         esp_lcd_panel_draw_bitmap(disp->panel_handle,
                                   x, row,
                                   x + w, row + 1,
-                                  line);
+                                  disp->line_buffer);
     }
-
-    free(line);
 }
 
-// 内部绘制整帧图像（暂不处理颜色交换，未来使用时需要额外处理）
+// 内部绘制整帧图像（假设颜色已处理）
 static void display_draw_bitmap_internal(struct Display *disp,
                                          int x, int y, int w, int h,
                                          const uint16_t *bitmap)
@@ -175,7 +166,7 @@ static void display_show_logo_internal(struct Display *disp)
         display_fill_rect_internal(disp, disp->width - i - step, i, step, step, white);
     }
 
-    // 中心画一个小方块，增加辨识度
+    // 中心画一个小方块
     int center = disp->width / 2;
     display_fill_rect_internal(disp, center - 20, center - 20, 40, 40, white);
 }
@@ -209,6 +200,11 @@ static int display_deinit(void *self)
     {
         esp_lcd_panel_del(disp->panel_handle);
         disp->panel_handle = NULL;
+    }
+    if (disp->line_buffer)
+    {
+        free(disp->line_buffer);
+        disp->line_buffer = NULL;
     }
     return 0;
 }

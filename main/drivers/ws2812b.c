@@ -5,10 +5,6 @@
 
 static const char *TAG = "ws2812b";
 
-// 全局 LED 灯条句柄
-static led_strip_handle_t g_led_strip = NULL;
-
-// 设备私有数据
 static struct ws2812b g_ws2812b;
 
 static int ws2812b_init(void *self)
@@ -38,10 +34,14 @@ static int ws2812b_init(void *self)
         },
     };
 
-    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &g_led_strip));
+    esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config, &ws2812b->strip_handle);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "LED strip init failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
 
     ESP_LOGI(TAG, "WS2812B 初始化完成");
-
     return 0;
 }
 
@@ -72,21 +72,34 @@ static int ws2812b_write(void *self, const void *buf, size_t len)
     ws2812b->green = rgb[1];
     ws2812b->blue = rgb[2];
 
-    led_strip_set_pixel(g_led_strip, 0,
-                        ws2812b->red,
-                        ws2812b->green,
-                        ws2812b->blue);
-    led_strip_refresh(g_led_strip);
+    esp_err_t ret = led_strip_set_pixel(ws2812b->strip_handle, 0,
+                                        ws2812b->red,
+                                        ws2812b->green,
+                                        ws2812b->blue);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "LED set pixel failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
+
+    ret = led_strip_refresh(ws2812b->strip_handle);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "LED refresh failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
 
     return 3;
 }
 
 static int ws2812b_deinit(void *self)
 {
-    if (g_led_strip != NULL)
+    struct ws2812b *ws2812b = (struct ws2812b *)self;
+
+    if (ws2812b->strip_handle)
     {
-        led_strip_del(g_led_strip);
-        g_led_strip = NULL;
+        led_strip_del(ws2812b->strip_handle);
+        ws2812b->strip_handle = NULL;
     }
 
     return 0;

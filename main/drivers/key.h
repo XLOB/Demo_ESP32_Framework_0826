@@ -15,6 +15,10 @@ struct Key
     int pressed;
 
     key_event_cb_t on_pressed; // 按下事件回调
+
+    // 软件消抖
+    int debounce_count;
+    int debounce_threshold; // 连续相同电平次数阈值
 };
 
 struct Device *Key_create(int gpio_num, const char *name);

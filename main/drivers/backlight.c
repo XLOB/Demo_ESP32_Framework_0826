@@ -14,20 +14,20 @@ static int backlight_init(void *self)
 
     // 1. 配置 LEDC 定时器
     ledc_timer_config_t timer_cfg = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .speed_mode = BACKLIGHT_LEDC_MODE,
         .duty_resolution = LEDC_TIMER_8_BIT,
-        .timer_num = LEDC_TIMER_0,
+        .timer_num = BACKLIGHT_LEDC_TIMER,
         .freq_hz = 5000,
         .clk_cfg = LEDC_AUTO_CLK};
     ledc_timer_config(&timer_cfg);
 
-    // 2. 配置 LEDC 通道，GPIO16
+    // 2. 配置 LEDC 通道
     ledc_channel_config_t channel_cfg = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_0,
-        .timer_sel = LEDC_TIMER_0,
+        .speed_mode = BACKLIGHT_LEDC_MODE,
+        .channel = BACKLIGHT_LEDC_CHANNEL,
+        .timer_sel = BACKLIGHT_LEDC_TIMER,
         .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = 16,
+        .gpio_num = BACKLIGHT_GPIO,
         .duty = 255, // 初始全亮
         .hpoint = 0};
     ledc_channel_config(&channel_cfg);
@@ -50,8 +50,8 @@ static int backlight_write(void *self, const void *buf, size_t len)
         percent = 100;
 
     uint32_t duty = (percent * 255) / 100;
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+    ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
 
     bl->brightness = percent;
 
@@ -70,7 +70,7 @@ static int backlight_read(void *self, void *buf, size_t len)
 
 static int backlight_deinit(void *self)
 {
-    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    ledc_stop(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, 0);
     return 0;
 }
 

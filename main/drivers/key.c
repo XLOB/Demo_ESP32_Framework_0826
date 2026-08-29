@@ -14,7 +14,9 @@ static int key_init(void *self)
     struct Key *key = (struct Key *)self;
 
     key->pressed = 0;
-    key->on_pressed = NULL; // 初始没有回调
+    key->on_pressed = NULL;
+    key->debounce_count = 0;
+    key->debounce_threshold = 3; // 默认3次采样稳定，约20ms*3=60ms
 
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << key->gpio_num),
@@ -90,7 +92,7 @@ void Key_set_callback(struct Device *dev, key_event_cb_t cb)
     key->on_pressed = cb;
 }
 
-// 轮询按键，检测按下沿和松开沿
+// 轮询按键，带软件消抖，检测按下沿并触发回调
 void Key_poll(struct Device *dev)
 {
     if (!dev || !dev->data)
@@ -100,25 +102,32 @@ void Key_poll(struct Device *dev)
 
     int cur = gpio_get_level(key->gpio_num);
 
-    // 按下沿
-    if (key->state == 1 && cur == 0)
+    if (cur != key->state)
     {
-        key->pressed = 1;
-    }
-
-    // 松开沿
-    if (key->state == 0 && cur == 1)
-    {
-        if (key->pressed)
+        key->debounce_count++;
+        if (key->debounce_count >= key->debounce_threshold)
         {
-            // 触发回调
-            if (key->on_pressed)
+            key->state = cur;
+            key->debounce_count = 0;
+
+            // 按下沿
+            if (cur == 0)
             {
-                key->on_pressed();
+                key->pressed = 1;
+                if (key->on_pressed)
+                {
+                    key->on_pressed();
+                }
             }
-            key->pressed = 0;
+            // 松开沿
+            else
+            {
+                key->pressed = 0;
+            }
         }
     }
-
-    key->state = cur;
+    else
+    {
+        key->debounce_count = 0;
+    }
 }
