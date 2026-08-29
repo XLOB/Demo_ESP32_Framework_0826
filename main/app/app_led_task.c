@@ -28,7 +28,9 @@ void led_task(void *arg)
         return;
     }
 
-    int color_index = 0;
+    // 初始索引设为 3（灭），因为 ws2812b_init 中 LED 已关闭
+    // 第一次按键 → 索引 0（红色），与实际显示状态一致
+    int color_index = 3;
 
     uint8_t red[3] = {255, 0, 0};
     uint8_t green[3] = {0, 255, 0};

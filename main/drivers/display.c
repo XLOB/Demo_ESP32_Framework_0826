@@ -11,6 +11,9 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <string.h>
+#include <stdlib.h>
+#include "esp_lvgl_port.h"
+#include "lvgl.h"
 
 static const char *TAG = "display";
 
@@ -20,7 +23,7 @@ static const char *TAG = "display";
 #define PIN_LCD_CS 15
 #define PIN_LCD_DC 14
 #define PIN_LCD_RST -1
-// 注意：背光由 backlight 驱动控制，此处不再定义 PIN_LCD_BL
+// 注意：背光由 backlight.c 驱动通过 LEDC 控制 GPIO 16，此处不再操作该引脚
 
 #define LCD_WIDTH 240
 #define LCD_HEIGHT 240
@@ -33,17 +36,17 @@ static struct Display g_display;
      ((uint16_t)(((uint8_t)(g) >> 2) & 0x3F) << 5) |  \
      ((uint16_t)(((uint8_t)(b) >> 3) & 0x1F)))
 
-// 颜色通道翻转：标准 RGB565 转面板需要的 BGR565
-static inline uint16_t display_swap_green_blue(uint16_t color)
+// RGB565 转 BGR565：交换红蓝通道，适配 LCD_RGB_ELEMENT_ORDER_BGR 面板配置
+static inline uint16_t display_swap_red_blue(uint16_t color)
 {
-    return (color & 0xF800) | ((color & 0x001F) << 5) | ((color & 0x07E0) >> 5);
+    return ((color & 0x001F) << 11) | (color & 0x07E0) | ((color & 0xF800) >> 11);
 }
 
 static int display_init(void *self)
 {
     struct Display *disp = (struct Display *)self;
 
-    // 1. 初始化 SPI 总线
+    // ===== 1. SPI 总线初始化 =====
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = PIN_LCD_MOSI,
         .miso_io_num = -1,
@@ -54,48 +57,89 @@ static int display_init(void *self)
     };
     ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
 
-    // 2. 创建 LCD 面板 IO
+    // ===== 2. 创建 LCD 面板 IO =====
     esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num = PIN_LCD_DC,
         .cs_gpio_num = PIN_LCD_CS,
         .spi_mode = 0,
-        .pclk_hz = 20 * 1000 * 1000, // 20MHz
+        .pclk_hz = 20 * 1000 * 1000,
         .trans_queue_depth = 10,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
-        (esp_lcd_spi_bus_handle_t)SPI3_HOST,
-        &io_config, &io_handle));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI3_HOST, &io_config, &io_handle));
 
-    // 3. 创建 ST7789 面板
+    // ===== 3. 创建 ST7789 面板 =====
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = PIN_LCD_RST,
         .bits_per_pixel = 16,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(
-        io_handle, &panel_config, &disp->panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &disp->panel_handle));
 
-    // 4. 初始化面板
+    // ===== 4. 初始化面板 =====
     ESP_ERROR_CHECK(esp_lcd_panel_reset(disp->panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel_handle, true));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel_handle, true));
 
-    // 5. 预分配行缓冲
     disp->width = LCD_WIDTH;
     disp->height = LCD_HEIGHT;
-    disp->line_buffer = heap_caps_malloc(disp->width * sizeof(uint16_t), MALLOC_CAP_DMA);
+
+    // ===== 5. 分配行缓冲（用于 display_fill_rect 等直接绘制函数） =====
+    // 使用 DMA 内存，确保 SPI 传输兼容
+    disp->line_buffer = heap_caps_malloc(LCD_WIDTH * sizeof(uint16_t), MALLOC_CAP_DMA);
     if (disp->line_buffer == NULL)
     {
-        ESP_LOGE(TAG, "Failed to allocate line buffer");
+        ESP_LOGE(TAG, "line_buffer 分配失败");
         return -1;
     }
 
-    ESP_LOGI(TAG, "屏幕初始化完成 (ST7789, RGB565, 240x240)");
+    // ===== 6. 初始化 LVGL 端口 =====
+    const lvgl_port_cfg_t lvgl_cfg = {
+        .task_priority = 4,       // LVGL 任务优先级
+        .task_stack = 4096,       // 堆栈大小
+        .task_affinity = -1,      // -1 = 不固定核心
+        .task_max_sleep_ms = 500, // 最大休眠时间
+        .timer_period_ms = 5,     // 定时器周期 (ms)
+    };
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+
+    // ===== 7. 将 LCD 面板添加到 LVGL =====
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle = io_handle,
+        .panel_handle = disp->panel_handle,
+        .buffer_size = LCD_WIDTH * 20, // 行缓冲大小（20 行）
+        .double_buffer = true,         // 双缓冲（性能更好）
+        .hres = LCD_WIDTH,
+        .vres = LCD_HEIGHT,
+        .monochrome = false,
+        .rotation = {
+            .swap_xy = false,
+            .mirror_x = false,
+            .mirror_y = false,
+        },
+        .flags = {
+            .buff_dma = true,    // 使用 DMA 内存
+            .buff_spiram = true, // 使用 PSRAM 作为缓冲（如果有）
+        },
+    };
+    lvgl_port_add_disp(&disp_cfg);
+
+    ESP_LOGI(TAG, "显示初始化完成，240x240，LVGL 已接管");
     return 0;
+}
+
+static int display_write(void *self, const void *buf, size_t len)
+{
+    // LVGL 接管显示，此函数空实现
+    return 0;
+}
+
+static int display_read(void *self, void *buf, size_t len)
+{
+    return -1;
 }
 
 // 内部填充矩形：统一处理颜色交换和裁剪
@@ -103,8 +147,8 @@ static void display_fill_rect_internal(struct Display *disp,
                                        int x, int y, int w, int h,
                                        uint16_t color)
 {
-    // 统一颜色转换
-    color = display_swap_green_blue(color);
+    // 适配 BGR 面板：交换红蓝通道
+    color = display_swap_red_blue(color);
 
     // 边界裁剪
     if (x < 0)
@@ -169,28 +213,6 @@ static void display_show_logo_internal(struct Display *disp)
     // 中心画一个小方块
     int center = disp->width / 2;
     display_fill_rect_internal(disp, center - 20, center - 20, 40, 40, white);
-}
-
-static int display_write(void *self, const void *buf, size_t len)
-{
-    struct Display *disp = (struct Display *)self;
-
-    // 如果传入完整帧缓冲，直接绘制
-    if (buf && len >= (size_t)LCD_WIDTH * LCD_HEIGHT * 2)
-    {
-        display_draw_bitmap_internal(disp, 0, 0, LCD_WIDTH, LCD_HEIGHT,
-                                     (const uint16_t *)buf);
-        return 0;
-    }
-
-    // 否则显示 Logo
-    display_show_logo_internal(disp);
-    return 0;
-}
-
-static int display_read(void *self, void *buf, size_t len)
-{
-    return -1; // 屏幕不支持读
 }
 
 static int display_deinit(void *self)

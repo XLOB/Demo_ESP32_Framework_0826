@@ -1,0 +1,2354 @@
+===== 文件: CMakeLists.txt =====
+idf_component_register(
+    SRCS
+        "main.c"
+        "framework/framework.c"
+        "framework/array.c"
+        "drivers/sensor.c"
+        "drivers/led.c"
+        "drivers/key.c"
+        "app/app_temp_task.c"
+        "app/app_key_task.c"
+        "drivers/internal_temp.c"
+        "drivers/sys_uptime.c"
+        "drivers/battery.c"
+        "drivers/display.c"
+        "drivers/backlight.c"
+        "drivers/uart_ph2.c"
+    REQUIRES
+        esp_lcd
+        esp_driver_gpio
+        esp_driver_tsens
+        esp_adc
+        driver
+        esp_timer
+        esp_driver_ledc
+        esp_driver_uart
+        esp_driver_spi
+        esp_lvgl_port          
+    INCLUDE_DIRS "."
+)
+
+===== 文件: app\app_key_task.c =====
+#include "app/app_key_task.h"
+
+#include "framework/framework.h"
+#include "drivers/key.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_log.h"
+
+static const char *TAG = "app_key";
+
+extern QueueHandle_t key_queue;
+
+// 消息类型：携带按键ID
+typedef struct
+{
+    int key_id; // 0: key_a, 1: key_b
+} key_msg_t;
+
+// 按键回调
+static void on_key_a_pressed(void)
+{
+    key_msg_t msg = {.key_id = 0};
+    if (xQueueSend(key_queue, &msg, 0) == pdTRUE)
+    {
+        ESP_LOGI(TAG, "key_a 按下，消息已发送");
+    }
+}
+
+static void on_key_b_pressed(void)
+{
+    key_msg_t msg = {.key_id = 1};
+    if (xQueueSend(key_queue, &msg, 0) == pdTRUE)
+    {
+        ESP_LOGI(TAG, "key_b 按下，消息已发送");
+    }
+}
+
+void key_task(void *arg)
+{
+    ESP_LOGI(TAG, "key_task 启动");
+
+    struct Device *key_a = device_find("key_a");
+    struct Device *key_b = device_find("key_b");
+
+    if (key_a == NULL || key_b == NULL)
+    {
+        ESP_LOGE(TAG, "未找到按键设备");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // 设备已经在 device_init_all 中初始化，这里只需注册回调
+    Key_set_callback(key_a, on_key_a_pressed);
+    Key_set_callback(key_b, on_key_b_pressed);
+
+    while (1)
+    {
+        Key_poll(key_a);
+        Key_poll(key_b);
+
+        vTaskDelay(pdMS_TO_TICKS(20)); // 20ms 轮询周期
+    }
+}
+
+===== 文件: app\app_key_task.h =====
+#ifndef APP_KEY_H
+#define APP_KEY_H
+
+void key_task(void *arg);
+
+#endif
+
+===== 文件: app\app_led_task.c =====
+#include "app/app_led_task.h"
+
+#include "framework/framework.h"
+#include "drivers/ws2812b.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_log.h"
+
+static const char *TAG = "app_led";
+
+extern QueueHandle_t key_queue;
+
+typedef struct
+{
+    int key_id;
+} key_msg_t;
+
+void led_task(void *arg)
+{
+    // 通过设备框架获取 ws2812b 设备
+    struct Device *ws2812b_dev = device_find("ws2812b");
+    if (ws2812b_dev == NULL)
+    {
+        ESP_LOGE(TAG, "未找到 ws2812b 设备");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int color_index = 0;
+
+    uint8_t red[3] = {255, 0, 0};
+    uint8_t green[3] = {0, 255, 0};
+    uint8_t blue[3] = {0, 0, 255};
+    uint8_t off[3] = {0, 0, 0};
+
+    while (1)
+    {
+        key_msg_t msg;
+        // 等待按键消息
+        if (xQueueReceive(key_queue, &msg, portMAX_DELAY) == pdTRUE)
+        {
+            color_index = (color_index + 1) % 4;
+
+            ESP_LOGI(TAG, "LED 切换颜色索引：%d (key_id=%d)", color_index, msg.key_id);
+
+            int ret = -1;
+            if (color_index == 0)
+            {
+                ret = ws2812b_dev->ops->write(ws2812b_dev->data, red, sizeof(red));
+            }
+            else if (color_index == 1)
+            {
+                ret = ws2812b_dev->ops->write(ws2812b_dev->data, green, sizeof(green));
+            }
+            else if (color_index == 2)
+            {
+                ret = ws2812b_dev->ops->write(ws2812b_dev->data, blue, sizeof(blue));
+            }
+            else
+            {
+                ret = ws2812b_dev->ops->write(ws2812b_dev->data, off, sizeof(off));
+            }
+
+            if (ret < 0)
+            {
+                ESP_LOGE(TAG, "LED 写入失败");
+            }
+        }
+    }
+}
+
+===== 文件: app\app_led_task.h =====
+#ifndef APP_LED_TASK_H
+#define APP_LED_TASK_H
+
+void led_task(void *arg);
+
+#endif
+
+===== 文件: app\app_temp_task.c =====
+#include "app/app_temp_task.h"
+
+#include "framework/framework.h"
+#include "drivers/internal_temp.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+
+static const char *TAG = "app_temp";
+
+void temp_task(void *arg)
+{
+    // 设备已在 device_init_all 中初始化，直接获取
+    struct Device *temp_dev = InternalTemp_get_device();
+    if (temp_dev == NULL)
+    {
+        ESP_LOGE(TAG, "未找到温度设备");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (1)
+    {
+        float temp = 0.0f;
+
+        if (temp_dev->ops->read)
+        {
+            int ret = temp_dev->ops->read(temp_dev->data, &temp, sizeof(temp));
+            if (ret > 0)
+            {
+                ESP_LOGI(TAG, "内部温度：%.2f °C", temp);
+            }
+            else
+            {
+                ESP_LOGE(TAG, "读取温度失败");
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5000)); // 每 5 秒读一次
+    }
+}
+
+===== 文件: app\app_temp_task.h =====
+#ifndef APP_TEMP_TASK_H
+#define APP_TEMP_TASK_H
+
+void temp_task(void *arg);
+
+#endif
+
+===== 文件: components\command_handler.c =====
+#include "command_handler.h"
+#include "framework/framework.h"
+#include "drivers/backlight.h"
+#include "drivers/display.h"
+#include "drivers/battery.h"
+#include "drivers/internal_temp.h"
+#include "drivers/sys_uptime.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_log.h"
+
+static const char *TAG = "cmd_handler";
+
+// 外部队列（在 main.c 中定义）
+extern QueueHandle_t key_queue;
+
+// 命令回调表
+typedef struct
+{
+    uint32_t cmd_id;
+    cmd_callback_t cb;
+    void *arg;
+} cmd_entry_t;
+
+#define MAX_CMDS 16
+static cmd_entry_t s_cmd_table[MAX_CMDS];
+static int s_cmd_count = 0;
+
+// 默认命令实现（示例）
+static void cmd_backlight_toggle(void *arg)
+{
+    static uint8_t level = 50; // 初始 50%
+    // 循环切换：0% -> 50% -> 100% -> 0%
+    if (level == 0)
+        level = 50;
+    else if (level == 50)
+        level = 100;
+    else
+        level = 0;
+
+    struct Device *bl = device_find("backlight");
+    if (bl && bl->ops && bl->ops->write)
+    {
+        bl->ops->write(bl->data, &level, sizeof(level));
+        ESP_LOGI(TAG, "背光亮度设置为 %d%%", level);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "背光设备未找到");
+    }
+}
+
+static void cmd_show_sensor_info(void *arg)
+{
+    // 读取温度、电池、运行时间并显示在屏幕上
+    struct Device *temp = device_find("internal_temp");
+    struct Device *bat = device_find("battery");
+    struct Device *uptime = device_find("sys_uptime");
+    struct Device *disp = device_find("display");
+
+    if (!disp)
+    {
+        ESP_LOGE(TAG, "显示设备未找到");
+        return;
+    }
+
+    float temperature = 0.0f;
+    if (temp && temp->ops && temp->ops->read)
+        temp->ops->read(temp->data, &temperature, sizeof(temperature));
+
+    struct Battery bat_data = {0};
+    if (bat && bat->ops && bat->ops->read)
+        bat->ops->read(bat->data, &bat_data, sizeof(bat_data));
+
+    uint32_t uptime_sec = 0;
+    if (uptime && uptime->ops && uptime->ops->read)
+        uptime->ops->read(uptime->data, &uptime_sec, sizeof(uptime_sec));
+
+    // 简单清屏并显示文字（暂时用填充色块模拟，后面可扩展字体）
+    // 这里我们只打印到日志，实际显示需要字体库，先简化
+    ESP_LOGI(TAG, "=== 传感器信息 ===");
+    ESP_LOGI(TAG, "温度: %.1f °C", temperature);
+    ESP_LOGI(TAG, "电池: %d mV (%d%%)", bat_data.voltage_mv, bat_data.percent);
+    ESP_LOGI(TAG, "运行时间: %d 秒", uptime_sec);
+
+    // 在屏幕上显示彩色矩形表示不同数据（示范）
+    if (disp && disp->ops && disp->ops->write)
+    {
+        // 简单显示一个颜色块，表示命令已执行
+        uint16_t color = 0x07E0; // 绿色
+        // 我们可以调用 display_fill_rect 在屏幕上显示一个矩形
+        // 但 display.c 中提供了 display_fill_rect 函数，需要包含头文件
+        // 这里我们调用 display_fill_rect（需要外部声明）
+        // 因为 display_fill_rect 不是 DeviceOps 的一部分，所以我们要包含 display.h
+        // 或者直接使用 ops->write 传递帧缓冲，但比较复杂。
+        // 为了简化，我们只打印日志，后面如果需要显示文字，可以扩展 display_manager 组件。
+    }
+}
+
+// 内部命令处理任务
+static void cmd_task(void *arg)
+{
+    ESP_LOGI(TAG, "命令处理器任务启动");
+
+    while (1)
+    {
+        int msg = 0;
+        if (xQueueReceive(key_queue, &msg, portMAX_DELAY) == pdTRUE)
+        {
+            ESP_LOGD(TAG, "收到按键消息: %d", msg);
+            // 根据消息值查找命令 ID（此处直接映射）
+            uint32_t cmd_id = 0;
+            if (msg == 1)
+                cmd_id = CMD_KEY_A_SHORT;
+            else if (msg == 2)
+                cmd_id = CMD_KEY_B_SHORT;
+            else
+                continue;
+
+            // 查找命令回调
+            cmd_callback_t cb = NULL;
+            void *cb_arg = NULL;
+            for (int i = 0; i < s_cmd_count; i++)
+            {
+                if (s_cmd_table[i].cmd_id == cmd_id)
+                {
+                    cb = s_cmd_table[i].cb;
+                    cb_arg = s_cmd_table[i].arg;
+                    break;
+                }
+            }
+            if (cb)
+            {
+                cb(cb_arg);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "未注册的命令 ID: %lu", cmd_id);
+            }
+        }
+    }
+}
+
+int command_handler_init(void)
+{
+    // 1. 注册默认命令
+    // key_a: 切换背光
+    if (command_handler_register(CMD_KEY_A_SHORT, cmd_backlight_toggle, NULL) != 0)
+    {
+        ESP_LOGE(TAG, "注册背光命令失败");
+    }
+    // key_b: 显示传感器信息
+    if (command_handler_register(CMD_KEY_B_SHORT, cmd_show_sensor_info, NULL) != 0)
+    {
+        ESP_LOGE(TAG, "注册传感器信息命令失败");
+    }
+
+    // 2. 创建任务（优先级略低于应用任务）
+    if (xTaskCreate(cmd_task, "cmd_handler", 2048, NULL, 4, NULL) != pdPASS)
+    {
+        ESP_LOGE(TAG, "创建命令处理任务失败");
+        return -1;
+    }
+
+    ESP_LOGI(TAG, "命令处理器初始化完成");
+    return 0;
+}
+
+int command_handler_register(uint32_t cmd_id, cmd_callback_t cb, void *arg)
+{
+    if (!cb)
+        return -1;
+    if (s_cmd_count >= MAX_CMDS)
+    {
+        ESP_LOGE(TAG, "命令表已满");
+        return -1;
+    }
+
+    // 检查是否已存在，存在则覆盖
+    for (int i = 0; i < s_cmd_count; i++)
+    {
+        if (s_cmd_table[i].cmd_id == cmd_id)
+        {
+            s_cmd_table[i].cb = cb;
+            s_cmd_table[i].arg = arg;
+            return 0;
+        }
+    }
+
+    // 新增
+    s_cmd_table[s_cmd_count].cmd_id = cmd_id;
+    s_cmd_table[s_cmd_count].cb = cb;
+    s_cmd_table[s_cmd_count].arg = arg;
+    s_cmd_count++;
+    return 0;
+}
+
+int command_handler_unregister(uint32_t cmd_id)
+{
+    for (int i = 0; i < s_cmd_count; i++)
+    {
+        if (s_cmd_table[i].cmd_id == cmd_id)
+        {
+            // 用最后一个元素覆盖当前
+            s_cmd_table[i] = s_cmd_table[s_cmd_count - 1];
+            s_cmd_count--;
+            return 0;
+        }
+    }
+    return -1; // 未找到
+}
+
+===== 文件: components\command_handler.h =====
+#ifndef COMMAND_HANDLER_H
+#define COMMAND_HANDLER_H
+
+#include <stdint.h>
+
+// 预定义命令 ID
+#define CMD_KEY_A_SHORT 1 // A 键短按
+#define CMD_KEY_B_SHORT 2 // B 键短按
+// 以后可扩展长按、组合等
+
+// 命令回调函数类型
+typedef void (*cmd_callback_t)(void *arg);
+
+/**
+ * @brief 初始化命令处理器
+ *
+ * 创建内部任务，注册默认命令（可覆盖）
+ * @return 0 成功，-1 失败
+ */
+int command_handler_init(void);
+
+/**
+ * @brief 注册自定义命令
+ *
+ * 若命令 ID 已存在，则覆盖旧回调
+ * @param cmd_id  命令 ID
+ * @param cb      回调函数
+ * @param arg     传递给回调的参数（可为 NULL）
+ * @return 0 成功，-1 失败
+ */
+int command_handler_register(uint32_t cmd_id, cmd_callback_t cb, void *arg);
+
+/**
+ * @brief 注销命令
+ * @param cmd_id 命令 ID
+ * @return 0 成功，-1 失败
+ */
+int command_handler_unregister(uint32_t cmd_id);
+
+#endif
+
+===== 文件: deepseek_python_20260829_90cd3e.py =====
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+
+def collect_files(start_dir="."):
+    """
+    遍历 start_dir 下的所有文件，返回文件路径列表（相对路径）。
+    """
+    file_paths = []
+    for root, dirs, files in os.walk(start_dir):
+        for file in files:
+            full_path = os.path.join(root, file)
+            rel_path = os.path.relpath(full_path, start_dir)
+            file_paths.append(rel_path)
+    return file_paths
+
+def read_file_content(file_path, base_dir="."):
+    """
+    尝试以 UTF-8 读取文件内容，若失败则返回 None。
+    """
+    full_path = os.path.join(base_dir, file_path)
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError:
+        # 可能是二进制文件，跳过
+        return None
+    except Exception as e:
+        print(f"警告: 读取文件 {file_path} 时发生错误: {e}", file=sys.stderr)
+        return None
+
+def main():
+    output_file = "all_files_content.txt"
+    base_dir = "."  # 当前目录
+
+    # 收集所有文件
+    files = collect_files(base_dir)
+    files.sort()  # 按路径排序
+
+    with open(output_file, "w", encoding="utf-8") as out:
+        for rel_path in files:
+            # 跳过输出文件自身（避免自引用）
+            if rel_path == output_file:
+                continue
+
+            content = read_file_content(rel_path, base_dir)
+            if content is None:
+                print(f"跳过二进制或无法解码的文件: {rel_path}", file=sys.stderr)
+                continue
+
+            # 写入文件头：路径分隔线
+            out.write(f"===== 文件: {rel_path} =====\n")
+            out.write(content)
+            # 确保每个文件内容后换行，便于区分
+            if not content.endswith("\n"):
+                out.write("\n")
+            out.write("\n")  # 额外空行分隔
+
+    print(f"所有文件内容已写入: {output_file}")
+
+if __name__ == "__main__":
+    main()
+
+===== 文件: drivers\backlight.c =====
+#include "backlight.h"
+#include "../framework/framework.h"
+
+#include "driver/ledc.h"
+#include "esp_log.h"
+
+static const char *TAG = "backlight";
+
+static struct Backlight g_backlight;
+
+static int backlight_init(void *self)
+{
+    struct Backlight *bl = (struct Backlight *)self;
+
+    // 1. 配置 LEDC 定时器
+    ledc_timer_config_t timer_cfg = {
+        .speed_mode = BACKLIGHT_LEDC_MODE,
+        .duty_resolution = LEDC_TIMER_8_BIT,
+        .timer_num = BACKLIGHT_LEDC_TIMER,
+        .freq_hz = 5000,
+        .clk_cfg = LEDC_AUTO_CLK};
+    ledc_timer_config(&timer_cfg);
+
+    // 2. 配置 LEDC 通道
+    ledc_channel_config_t channel_cfg = {
+        .speed_mode = BACKLIGHT_LEDC_MODE,
+        .channel = BACKLIGHT_LEDC_CHANNEL,
+        .timer_sel = BACKLIGHT_LEDC_TIMER,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = BACKLIGHT_GPIO,
+        .duty = 255, // 初始全亮
+        .hpoint = 0};
+    ledc_channel_config(&channel_cfg);
+
+    bl->brightness = 100;
+
+    ESP_LOGI(TAG, "背光驱动初始化完成");
+    return 0;
+}
+
+static int backlight_write(void *self, const void *buf, size_t len)
+{
+    struct Backlight *bl = (struct Backlight *)self;
+
+    if (len < sizeof(uint8_t))
+        return -1;
+
+    uint8_t percent = *(const uint8_t *)buf;
+    if (percent > 100)
+        percent = 100;
+
+    uint32_t duty = (percent * 255) / 100;
+    ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+    ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+
+    bl->brightness = percent;
+
+    return sizeof(uint8_t);
+}
+
+static int backlight_read(void *self, void *buf, size_t len)
+{
+    struct Backlight *bl = (struct Backlight *)self;
+
+    if (len < sizeof(uint8_t))
+        return -1;
+    memcpy(buf, &bl->brightness, sizeof(uint8_t));
+    return sizeof(uint8_t);
+}
+
+static int backlight_deinit(void *self)
+{
+    ledc_stop(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, 0);
+    return 0;
+}
+
+static const struct DeviceOps backlight_ops = {
+    .init = backlight_init,
+    .read = backlight_read,
+    .write = backlight_write,
+    .deinit = backlight_deinit,
+};
+
+static struct Device g_backlight_device = {
+    .name = "backlight",
+    .data = &g_backlight,
+    .ops = &backlight_ops,
+};
+
+struct Device *Backlight_get_device(void)
+{
+    return &g_backlight_device;
+}
+
+===== 文件: drivers\backlight.h =====
+#ifndef BACKLIGHT_H
+#define BACKLIGHT_H
+
+#include <stdint.h>
+#include "driver/ledc.h"
+
+struct Device;
+
+// 背光使用的LEDC配置宏
+#define BACKLIGHT_LEDC_MODE LEDC_LOW_SPEED_MODE
+#define BACKLIGHT_LEDC_TIMER LEDC_TIMER_0
+#define BACKLIGHT_LEDC_CHANNEL LEDC_CHANNEL_0
+#define BACKLIGHT_GPIO 16
+
+struct Backlight
+{
+    uint8_t brightness; // 0~100
+};
+
+struct Device *Backlight_get_device(void);
+
+#endif
+
+===== 文件: drivers\battery.c =====
+#include "battery.h"
+#include "../framework/framework.h"
+
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_log.h"
+
+static const char *TAG = "battery";
+
+static struct Battery g_battery;
+
+#define BATTERY_ADC_UNIT ADC_UNIT_2
+#define BATTERY_ADC_CHANNEL ADC_CHANNEL_7 // 根据实际硬件调整
+#define BATTERY_DIVIDER_RATIO 2           // 分压比
+
+static int battery_init(void *self)
+{
+    struct Battery *battery = (struct Battery *)self;
+
+    // 初始化参数
+    battery->voltage_divider_ratio = BATTERY_DIVIDER_RATIO;
+    battery->voltage_mv = 0;
+    battery->percent = 0;
+
+    // 1. 创建 ADC oneshot 单元
+    adc_oneshot_unit_init_cfg_t init_cfg = {
+        .unit_id = BATTERY_ADC_UNIT,
+    };
+    esp_err_t ret = adc_oneshot_new_unit(&init_cfg, &battery->adc_handle);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "ADC unit init failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
+
+    // 2. 配置 ADC 通道
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    ret = adc_oneshot_config_channel(battery->adc_handle, BATTERY_ADC_CHANNEL, &chan_cfg);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "ADC channel config failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
+
+    // 3. 尝试创建校准句柄
+    adc_cali_curve_fitting_config_t cali_cfg = {
+        .unit_id = BATTERY_ADC_UNIT,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+
+    ret = adc_cali_create_scheme_curve_fitting(&cali_cfg, &battery->cali_handle);
+    if (ret != ESP_OK)
+    {
+        battery->cali_handle = NULL;
+        ESP_LOGW(TAG, "ADC calibration failed, using raw values");
+    }
+
+    ESP_LOGI(TAG, "电池 ADC 初始化完成");
+    return 0;
+}
+
+static int battery_read(void *self, void *buf, size_t len)
+{
+    struct Battery *battery = (struct Battery *)self;
+
+    if (len < sizeof(struct Battery))
+        return -1;
+
+    int raw = 0;
+    esp_err_t ret = adc_oneshot_read(battery->adc_handle, BATTERY_ADC_CHANNEL, &raw);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "ADC read failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
+
+    int voltage_mv = 0;
+
+    if (battery->cali_handle != NULL)
+    {
+        ret = adc_cali_raw_to_voltage(battery->cali_handle, raw, &voltage_mv);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "ADC calibration conversion failed: %s", esp_err_to_name(ret));
+            return -1;
+        }
+    }
+    else
+    {
+        // 没有校准，手动换算：12dB 衰减，3.3V 参考
+        voltage_mv = (raw * 3300) / 4095;
+    }
+
+    // 应用分压比
+    int battery_mv = voltage_mv * battery->voltage_divider_ratio;
+
+    battery->voltage_mv = battery_mv;
+
+    // 粗略估算电量：3.3V ~ 4.2V
+    if (battery_mv >= 4200)
+        battery->percent = 100;
+    else if (battery_mv <= 3300)
+        battery->percent = 0;
+    else
+        battery->percent = (battery_mv - 3300) * 100 / (4200 - 3300);
+
+    memcpy(buf, battery, sizeof(struct Battery));
+
+    return sizeof(struct Battery);
+}
+
+static int battery_write(void *self, const void *buf, size_t len)
+{
+    return -1;
+}
+
+static int battery_deinit(void *self)
+{
+    struct Battery *battery = (struct Battery *)self;
+
+    if (battery->adc_handle)
+    {
+        adc_oneshot_del_unit(battery->adc_handle);
+        battery->adc_handle = NULL;
+    }
+
+    if (battery->cali_handle)
+    {
+        adc_cali_delete_scheme_curve_fitting(battery->cali_handle);
+        battery->cali_handle = NULL;
+    }
+
+    return 0;
+}
+
+static const struct DeviceOps battery_ops = {
+    .init = battery_init,
+    .read = battery_read,
+    .write = battery_write,
+    .deinit = battery_deinit,
+};
+
+static struct Device g_battery_device = {
+    .name = "battery",
+    .data = &g_battery,
+    .ops = &battery_ops,
+};
+
+struct Device *Battery_get_device(void)
+{
+    return &g_battery_device;
+}
+
+===== 文件: drivers\battery.h =====
+#ifndef BATTERY_H
+#define BATTERY_H
+
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+
+struct Device;
+
+struct Battery
+{
+    int voltage_mv; // 电压，单位毫伏
+    int percent;    // 电量百分比，粗略估算
+
+    // ADC 句柄和校准句柄
+    adc_oneshot_unit_handle_t adc_handle;
+    adc_cali_handle_t cali_handle;
+
+    // 可配置参数
+    int voltage_divider_ratio; // 分压比，例如2表示实际电压 = ADC读数 * 2
+};
+
+struct Device *Battery_get_device(void);
+
+#endif
+
+===== 文件: drivers\display.c =====
+#include "display.h"
+#include "../framework/framework.h"
+
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_vendor.h"
+
+#include "driver/spi_master.h"
+#include "driver/gpio.h"
+
+#include "esp_log.h"
+#include "esp_heap_caps.h"
+#include <string.h>
+#include "esp_lvgl_port.h"
+#include "lvgl.h"
+
+static const char *TAG = "display";
+
+// AI-VOX3 屏幕引脚
+#define PIN_LCD_MOSI 21
+#define PIN_LCD_SCLK 17
+#define PIN_LCD_CS 15
+#define PIN_LCD_DC 14
+#define PIN_LCD_RST -1
+// 注意：背光由 backlight 驱动控制，此处不再定义 PIN_LCD_BL
+#define PIN_LCD_BL 16
+
+
+#define LCD_WIDTH 240
+#define LCD_HEIGHT 240
+
+static struct Display g_display;
+
+// RGB565 颜色宏 (5位红 + 6位绿 + 5位蓝)
+#define RGB565(r, g, b)                               \
+    (((uint16_t)(((uint8_t)(r) >> 3) & 0x1F) << 11) | \
+     ((uint16_t)(((uint8_t)(g) >> 2) & 0x3F) << 5) |  \
+     ((uint16_t)(((uint8_t)(b) >> 3) & 0x1F)))
+
+// 颜色通道翻转：标准 RGB565 转面板需要的 BGR565
+static inline uint16_t display_swap_green_blue(uint16_t color)
+{
+    return (color & 0xF800) | ((color & 0x001F) << 5) | ((color & 0x07E0) >> 5);
+}
+
+static int display_init(void *self)
+{
+    struct Display *disp = (struct Display *)self;
+
+    // ===== 1. 背光（保持不变） =====
+    gpio_config_t bl_conf = {
+        .pin_bit_mask = 1ULL << PIN_LCD_BL,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&bl_conf);
+    gpio_set_level(PIN_LCD_BL, 1);
+
+    // ===== 2. SPI 总线初始化（保持不变） =====
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num = PIN_LCD_MOSI,
+        .miso_io_num = -1,
+        .sclk_io_num = PIN_LCD_SCLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = LCD_WIDTH * LCD_HEIGHT * 2,
+    };
+    ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
+
+    // ===== 3. 创建 LCD 面板 IO（保持不变） =====
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    esp_lcd_panel_io_spi_config_t io_config = {
+        .dc_gpio_num = PIN_LCD_DC,
+        .cs_gpio_num = PIN_LCD_CS,
+        .spi_mode = 0,
+        .pclk_hz = 20 * 1000 * 1000,
+        .trans_queue_depth = 10,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI3_HOST, &io_config, &io_handle));
+
+    // ===== 4. 创建 ST7789 面板（保持不变） =====
+    esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = PIN_LCD_RST,
+        .bits_per_pixel = 16,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &disp->panel_handle));
+
+    // ===== 5. 初始化面板（保持不变） =====
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(disp->panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel_handle, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel_handle, true));
+
+    disp->width = LCD_WIDTH;
+    disp->height = LCD_HEIGHT;
+
+    // ===== 6. ✨ 新增：初始化 LVGL 端口 =====
+    const lvgl_port_cfg_t lvgl_cfg = {
+        .task_priority = 4,       // LVGL 任务优先级
+        .task_stack = 4096,       // 堆栈大小
+        .task_affinity = -1,      // -1 = 不固定核心
+        .task_max_sleep_ms = 500, // 最大休眠时间
+        .timer_period_ms = 5,     // 定时器周期 (ms)
+    };
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+
+    // ===== 7. ✨ 新增：将 LCD 面板添加到 LVGL =====
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle = io_handle,
+        .panel_handle = disp->panel_handle,
+        .buffer_size = LCD_WIDTH * 20, // 行缓冲大小（20 行）
+        .double_buffer = true,         // 双缓冲（性能更好）
+        .hres = LCD_WIDTH,
+        .vres = LCD_HEIGHT,
+        .monochrome = false,
+        .rotation = {
+            .swap_xy = false,
+            .mirror_x = false,
+            .mirror_y = false,
+        },
+        .flags = {
+            .buff_dma = true,    // 使用 DMA 内存
+            .buff_spiram = true, // 使用 PSRAM 作为缓冲（如果有）
+        },
+    };
+    lvgl_port_add_disp(&disp_cfg);
+
+    // ===== 8. 可选：显示一个 LVGL 演示界面（验证用） =====
+    lvgl_port_lock(0);
+    // lv_demo_widgets(); // LVGL 自带的小部件演示
+    lvgl_port_unlock();
+
+    ESP_LOGI(TAG, "LVGL 初始化完成，240x240");
+    return 0;
+}
+
+static int display_write(void *self, const void *buf, size_t len)
+{
+    // LVGL 接管，此函数可以空实现或返回错误
+    return 0;
+}
+
+static int display_read(void *self, void *buf, size_t len)
+{
+    return -1;
+}
+
+// 内部填充矩形：统一处理颜色交换和裁剪
+static void display_fill_rect_internal(struct Display *disp,
+                                       int x, int y, int w, int h,
+                                       uint16_t color)
+{
+    // 统一颜色转换
+    color = display_swap_green_blue(color);
+
+    // 边界裁剪
+    if (x < 0)
+    {
+        w += x;
+        x = 0;
+    }
+    if (y < 0)
+    {
+        h += y;
+        y = 0;
+    }
+    if (x + w > disp->width)
+        w = disp->width - x;
+    if (y + h > disp->height)
+        h = disp->height - y;
+    if (w <= 0 || h <= 0)
+        return;
+
+    // 填充行缓冲
+    for (int i = 0; i < w; i++)
+    {
+        disp->line_buffer[i] = color;
+    }
+
+    // 设置窗口并逐行绘制
+    for (int row = y; row < y + h; row++)
+    {
+        esp_lcd_panel_draw_bitmap(disp->panel_handle,
+                                  x, row,
+                                  x + w, row + 1,
+                                  disp->line_buffer);
+    }
+}
+
+// 内部绘制整帧图像（假设颜色已处理）
+static void display_draw_bitmap_internal(struct Display *disp,
+                                         int x, int y, int w, int h,
+                                         const uint16_t *bitmap)
+{
+    esp_lcd_panel_draw_bitmap(disp->panel_handle, x, y, x + w, y + h, bitmap);
+}
+
+// 显示简单的 xhyOS Logo（白色 X）
+static void display_show_logo_internal(struct Display *disp)
+{
+    // 清屏黑色
+    display_fill_rect_internal(disp, 0, 0, disp->width, disp->height, 0x0000);
+
+    // 画一个大的 X：两条对角线
+    uint16_t white = 0xFFFF;
+    int step = 10; // 每个方块的边长
+
+    for (int i = 0; i < disp->width; i += step)
+    {
+        // 左上到右下
+        display_fill_rect_internal(disp, i, i, step, step, white);
+        // 右上到左下
+        display_fill_rect_internal(disp, disp->width - i - step, i, step, step, white);
+    }
+
+    // 中心画一个小方块
+    int center = disp->width / 2;
+    display_fill_rect_internal(disp, center - 20, center - 20, 40, 40, white);
+}
+
+static int display_deinit(void *self)
+{
+    struct Display *disp = (struct Display *)self;
+    if (disp->panel_handle)
+    {
+        esp_lcd_panel_del(disp->panel_handle);
+        disp->panel_handle = NULL;
+    }
+    if (disp->line_buffer)
+    {
+        free(disp->line_buffer);
+        disp->line_buffer = NULL;
+    }
+    return 0;
+}
+
+static const struct DeviceOps display_ops = {
+    .init = display_init,
+    .read = display_read,
+    .write = display_write,
+    .deinit = display_deinit,
+};
+
+static struct Device g_display_device = {
+    .name = "display",
+    .data = &g_display,
+    .ops = &display_ops,
+};
+
+struct Device *Display_get_device(void)
+{
+    return &g_display_device;
+}
+
+int display_clear(struct Device *dev, uint16_t color)
+{
+    if (!dev || !dev->data)
+        return -1;
+    struct Display *disp = (struct Display *)dev->data;
+    display_fill_rect_internal(disp, 0, 0, disp->width, disp->height, color);
+    return 0;
+}
+
+int display_fill_rect(struct Device *dev, int x, int y, int w, int h, uint16_t color)
+{
+    if (!dev || !dev->data)
+        return -1;
+    struct Display *disp = (struct Display *)dev->data;
+    display_fill_rect_internal(disp, x, y, w, h, color);
+    return 0;
+}
+
+===== 文件: drivers\display.h =====
+#ifndef DISPLAY_H
+#define DISPLAY_H
+
+#include <stddef.h>
+#include "esp_lcd_panel_ops.h"
+
+struct Device;
+
+struct Display
+{
+    esp_lcd_panel_handle_t panel_handle;
+    int width;
+    int height;
+    uint16_t *line_buffer; // 预分配的行缓冲（用于绘制）
+};
+
+struct Device *Display_get_device(void);
+
+int display_clear(struct Device *dev, uint16_t color);
+int display_fill_rect(struct Device *dev, int x, int y, int w, int h, uint16_t color);
+
+#endif
+
+===== 文件: drivers\internal_temp.c =====
+#include "internal_temp.h"
+#include "../framework/framework.h"
+#include "driver/temperature_sensor.h"
+#include "esp_log.h"
+#include <string.h>
+
+static const char *TAG = "internal_temp";
+
+// 设备私有数据
+static struct InternalTemp g_temp;
+
+// 温度传感器句柄
+static temperature_sensor_handle_t g_temp_handle = NULL;
+
+static int internal_temp_init(void *self)
+{
+    struct InternalTemp *temp = (struct InternalTemp *)self;
+
+    // 1. 配置温度传感器
+    temperature_sensor_config_t config =
+        TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+
+    // 2. 安装
+    esp_err_t ret = temperature_sensor_install(&config, &g_temp_handle);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "温度传感器安装失败");
+        return -1;
+    }
+
+    // 3. 启用
+    ret = temperature_sensor_enable(g_temp_handle);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "温度传感器启用失败");
+        return -1;
+    }
+
+    temp->temperature = 0.0f;
+
+    ESP_LOGI(TAG, "内部温度传感器初始化完成");
+
+    return 0;
+}
+
+static int internal_temp_read(void *self, void *buf, size_t len)
+{
+    struct InternalTemp *temp = (struct InternalTemp *)self;
+
+    if (len < sizeof(float))
+        return -1;
+
+    float celsius = 0.0f;
+
+    esp_err_t ret = temperature_sensor_get_celsius(g_temp_handle, &celsius);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "读取温度失败");
+        return -1;
+    }
+
+    temp->temperature = celsius;
+
+    memcpy(buf, &temp->temperature, sizeof(float));
+
+    return sizeof(float);
+}
+
+static int internal_temp_write(void *self, const void *buf, size_t len)
+{
+    // 温度传感器只读
+    return -1;
+}
+
+static int internal_temp_deinit(void *self)
+{
+    if (g_temp_handle != NULL)
+    {
+        temperature_sensor_disable(g_temp_handle);
+        temperature_sensor_uninstall(g_temp_handle);
+        g_temp_handle = NULL;
+    }
+
+    return 0;
+}
+
+static const struct DeviceOps internal_temp_ops = {
+    .init = internal_temp_init,
+    .read = internal_temp_read,
+    .write = internal_temp_write,
+    .deinit = internal_temp_deinit,
+};
+
+static struct Device g_internal_temp_device = {
+    .name = "internal_temp",
+    .data = &g_temp,
+    .ops = &internal_temp_ops,
+};
+
+struct Device *InternalTemp_get_device(void)
+{
+    return &g_internal_temp_device;
+}
+
+===== 文件: drivers\internal_temp.h =====
+// internal_temp.h
+#ifndef INTERNAL_TEMP_H
+#define INTERNAL_TEMP_H
+
+struct Device;
+
+struct InternalTemp
+{
+    float temperature;
+};
+
+struct Device *InternalTemp_get_device(void);
+
+#endif // INTERNAL_TEMP_H
+
+===== 文件: drivers\key.c =====
+#include "key.h"
+#include "../framework/framework.h"
+
+#include "driver/gpio.h"
+#include "esp_log.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+static const char *TAG = "key";
+
+static int key_init(void *self)
+{
+    struct Key *key = (struct Key *)self;
+
+    key->pressed = 0;
+    key->on_pressed = NULL;
+    key->debounce_count = 0;
+    key->debounce_threshold = 3; // 默认3次采样稳定，约20ms*3=60ms
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << key->gpio_num),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+
+    key->state = gpio_get_level(key->gpio_num);
+
+    ESP_LOGI(TAG, "按键初始化完成，GPIO=%d", key->gpio_num);
+    return 0;
+}
+
+static int key_read(void *self, void *buf, size_t len)
+{
+    struct Key *key = (struct Key *)self;
+    if (len < sizeof(int))
+        return -1;
+    key->state = gpio_get_level(key->gpio_num);
+    memcpy(buf, &key->state, sizeof(int));
+    return sizeof(int);
+}
+
+static int key_write(void *self, const void *buf, size_t len)
+{
+    return -1;
+}
+
+static int key_deinit(void *self)
+{
+    return 0;
+}
+
+static const struct DeviceOps key_ops = {
+    .init = key_init,
+    .read = key_read,
+    .write = key_write,
+    .deinit = key_deinit,
+};
+
+struct Device *Key_create(int gpio_num, const char *name)
+{
+    struct Key *key = calloc(1, sizeof(struct Key));
+    if (!key)
+        return NULL;
+
+    key->gpio_num = gpio_num;
+
+    struct Device *dev = calloc(1, sizeof(struct Device));
+    if (!dev)
+    {
+        free(key);
+        return NULL;
+    }
+
+    dev->name = name;
+    dev->data = key;
+    dev->ops = &key_ops;
+
+    return dev;
+}
+
+// 设置回调
+void Key_set_callback(struct Device *dev, key_event_cb_t cb)
+{
+    if (!dev || !dev->data)
+        return;
+
+    struct Key *key = (struct Key *)dev->data;
+    key->on_pressed = cb;
+}
+
+// 轮询按键，带软件消抖，检测按下沿并触发回调
+void Key_poll(struct Device *dev)
+{
+    if (!dev || !dev->data)
+        return;
+
+    struct Key *key = (struct Key *)dev->data;
+
+    int cur = gpio_get_level(key->gpio_num);
+
+    if (cur != key->state)
+    {
+        key->debounce_count++;
+        if (key->debounce_count >= key->debounce_threshold)
+        {
+            key->state = cur;
+            key->debounce_count = 0;
+
+            // 按下沿
+            if (cur == 0)
+            {
+                key->pressed = 1;
+                if (key->on_pressed)
+                {
+                    key->on_pressed();
+                }
+            }
+            // 松开沿
+            else
+            {
+                key->pressed = 0;
+            }
+        }
+    }
+    else
+    {
+        key->debounce_count = 0;
+    }
+}
+
+===== 文件: drivers\key.h =====
+#ifndef KEY_H
+#define KEY_H
+
+#include <stdint.h>
+
+struct Device;
+
+// 按键事件回调类型
+typedef void (*key_event_cb_t)(void);
+
+struct Key
+{
+    int gpio_num;
+    int state;
+    int pressed;
+
+    key_event_cb_t on_pressed; // 按下事件回调
+
+    // 软件消抖
+    int debounce_count;
+    int debounce_threshold; // 连续相同电平次数阈值
+};
+
+struct Device *Key_create(int gpio_num, const char *name);
+
+// 设置按键按下回调
+void Key_set_callback(struct Device *dev, key_event_cb_t cb);
+
+// 轮询按键，内部进行状态机检测并触发回调
+void Key_poll(struct Device *dev);
+
+#endif
+
+===== 文件: drivers\led.c =====
+#include "led.h"
+#include "../framework/framework.h"
+
+static int led_init(void *self)
+{
+    struct Led *led = (struct Led *)self;
+    led->state = 0;
+    return 0;
+}
+
+static int led_read(void *self, void *buf, size_t len)
+{
+    struct Led *led = (struct Led *)self;
+    if (len < sizeof(int))
+        return -1;
+    *(int *)buf = led->state;
+    return sizeof(int);
+}
+
+static int led_write(void *self, const void *buf, size_t len)
+{
+    struct Led *led = (struct Led *)self;
+    if (len < sizeof(int))
+        return -1;
+    led->state = *(const int *)buf;
+    return sizeof(int);
+}
+
+static int led_deinit(void *self)
+{
+    return 0;
+}
+
+static const struct DeviceOps led_ops = {
+    .init = led_init,
+    .read = led_read,
+    .write = led_write,
+    .deinit = led_deinit,
+};
+
+static struct Led g_led;
+static struct Device g_led_device = {
+    .name = "led",
+    .data = &g_led,
+    .ops = &led_ops,
+};
+
+struct Device *Led_get_device(void)
+{
+    return &g_led_device;
+}
+
+===== 文件: drivers\led.h =====
+#ifndef LED_H
+#define LED_H
+
+struct Device;
+
+struct Led
+{
+    int state; // 0=关，1=开
+};
+
+struct Device *Led_get_device(void);
+
+#endif
+
+===== 文件: drivers\sensor.c =====
+#include "sensor.h"
+#include "../framework/framework.h"
+
+static int sensor_init(void *self)
+{
+    struct VirtualSensor *sensor = (struct VirtualSensor *)self;
+    sensor->value = 25;
+    return 0;
+}
+
+static int sensor_read(void *self, void *buf, size_t len)
+{
+    struct VirtualSensor *sensor = (struct VirtualSensor *)self;
+    if (len < sizeof(int))
+        return -1;
+    *(int *)buf = sensor->value;
+    return sizeof(int);
+}
+
+static int sensor_write(void *self, const void *buf, size_t len)
+{
+    struct VirtualSensor *sensor = (struct VirtualSensor *)self;
+    if (len < sizeof(int))
+        return -1;
+    sensor->value = *(const int *)buf;
+    return sizeof(int);
+}
+
+static int sensor_deinit(void *self)
+{
+    return 0;
+}
+
+static const struct DeviceOps sensor_ops = {
+    .init = sensor_init,
+    .read = sensor_read,
+    .write = sensor_write,
+    .deinit = sensor_deinit,
+};
+
+static struct VirtualSensor g_sensor;
+static struct Device g_sensor_device = {
+    .name = "temp_sensor",
+    .data = &g_sensor,
+    .ops = &sensor_ops,
+};
+
+struct Device *VirtualSensor_get_device(void)
+{
+    return &g_sensor_device;
+}
+
+===== 文件: drivers\sensor.h =====
+#ifndef SENSOR_H
+#define SENSOR_H
+
+struct Device;
+
+struct VirtualSensor
+{
+    int value;
+};
+
+struct Device *VirtualSensor_get_device(void);
+
+#endif
+
+===== 文件: drivers\sys_uptime.c =====
+#include "sys_uptime.h"
+#include "../framework/framework.h"
+#include "esp_timer.h"
+#include "esp_log.h"
+
+static struct SysUptime g_uptime;
+
+static int sys_uptime_init(void *self)
+{
+    struct SysUptime *uptime = (struct SysUptime *)self;
+    uptime->seconds = 0;
+    return 0;
+}
+
+static int sys_uptime_read(void *self, void *buf, size_t len)
+{
+    struct SysUptime *uptime = (struct SysUptime *)self;
+
+    if (len < sizeof(uint32_t))
+        return -1;
+
+    // esp_timer_get_time() 返回微秒
+    uint32_t seconds = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+
+    uptime->seconds = seconds;
+
+    memcpy(buf, &uptime->seconds, sizeof(uint32_t));
+
+    return sizeof(uint32_t);
+}
+
+static int sys_uptime_write(void *self, const void *buf, size_t len)
+{
+    return -1; // 运行时间不支持写
+}
+
+static int sys_uptime_deinit(void *self)
+{
+    return 0;
+}
+
+static const struct DeviceOps sys_uptime_ops = {
+    .init = sys_uptime_init,
+    .read = sys_uptime_read,
+    .write = sys_uptime_write,
+    .deinit = sys_uptime_deinit,
+};
+
+static struct Device g_sys_uptime_device = {
+    .name = "sys_uptime",
+    .data = &g_uptime,
+    .ops = &sys_uptime_ops,
+};
+
+struct Device *SysUptime_get_device(void)
+{
+    return &g_sys_uptime_device;
+}
+
+===== 文件: drivers\sys_uptime.h =====
+#ifndef SYS_UPTIME_H
+#define SYS_UPTIME_H
+
+#include <stdint.h>
+
+struct Device;
+
+struct SysUptime
+{
+    uint32_t seconds;
+};
+
+struct Device *SysUptime_get_device(void);
+
+#endif
+
+===== 文件: drivers\uart_ph2.c =====
+#include "uart_ph2.h"
+#include "../framework/framework.h"
+
+#include "driver/uart.h"
+#include "esp_log.h"
+
+static const char *TAG = "uart_ph2";
+
+#define PH2_UART_NUM UART_NUM_1
+#define PH2_TX_GPIO 5
+#define PH2_RX_GPIO 6
+#define PH2_UART_BUF_SIZE 256
+
+static struct UartPh2 g_uart_ph2;
+
+static int uart_ph2_init(void *self)
+{
+    struct UartPh2 *uart = (struct UartPh2 *)self;
+
+    uart_config_t uart_cfg = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    esp_err_t ret = uart_driver_install(PH2_UART_NUM, PH2_UART_BUF_SIZE, 0, 0, NULL, 0);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "UART 驱动安装失败");
+        return -1;
+    }
+
+    ret = uart_param_config(PH2_UART_NUM, &uart_cfg);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "UART 参数配置失败");
+        return -1;
+    }
+
+    ret = uart_set_pin(PH2_UART_NUM, PH2_TX_GPIO, PH2_RX_GPIO, -1, -1);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "UART 引脚配置失败");
+        return -1;
+    }
+
+    uart->uart_num = PH2_UART_NUM;
+    uart->baud_rate = 115200;
+
+    ESP_LOGI(TAG, "PH2.0 UART 初始化完成");
+    return 0;
+}
+
+static int uart_ph2_write(void *self, const void *buf, size_t len)
+{
+    struct UartPh2 *uart = (struct UartPh2 *)self;
+
+    if (buf == NULL || len == 0)
+        return -1;
+
+    int written = uart_write_bytes(uart->uart_num, buf, len);
+    if (written < 0)
+        return -1;
+
+    return written;
+}
+
+static int uart_ph2_read(void *self, void *buf, size_t len)
+{
+    struct UartPh2 *uart = (struct UartPh2 *)self;
+
+    if (buf == NULL || len == 0)
+        return -1;
+
+    int read_len = uart_read_bytes(uart->uart_num, buf, len, pdMS_TO_TICKS(100));
+    if (read_len < 0)
+        return -1;
+
+    return read_len;
+}
+
+static int uart_ph2_deinit(void *self)
+{
+    struct UartPh2 *uart = (struct UartPh2 *)self;
+    uart_driver_delete(uart->uart_num);
+    return 0;
+}
+
+static const struct DeviceOps uart_ph2_ops = {
+    .init = uart_ph2_init,
+    .read = uart_ph2_read,
+    .write = uart_ph2_write,
+    .deinit = uart_ph2_deinit,
+};
+
+static struct Device g_uart_ph2_device = {
+    .name = "uart_ph2",
+    .data = &g_uart_ph2,
+    .ops = &uart_ph2_ops,
+};
+
+struct Device *UartPh2_get_device(void)
+{
+    return &g_uart_ph2_device;
+}
+
+===== 文件: drivers\uart_ph2.h =====
+#ifndef UART_PH2_H
+#define UART_PH2_H
+
+#include <stddef.h>
+
+struct Device;
+
+struct UartPh2
+{
+    int uart_num;
+    int baud_rate;
+};
+
+struct Device *UartPh2_get_device(void);
+
+#endif
+
+===== 文件: drivers\ws2812b.c =====
+#include "ws2812b.h"
+#include "../framework/framework.h"
+#include "led_strip.h"
+#include "esp_log.h"
+
+static const char *TAG = "ws2812b";
+
+static struct ws2812b g_ws2812b;
+
+static int ws2812b_init(void *self)
+{
+    struct ws2812b *ws2812b = (struct ws2812b *)self;
+
+    ws2812b->red = 0;
+    ws2812b->green = 0;
+    ws2812b->blue = 0;
+
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = 41,
+        .max_leds = 1,
+        .led_model = LED_MODEL_WS2812,
+        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+        .flags = {
+            .invert_out = false,
+        },
+    };
+
+    led_strip_rmt_config_t rmt_config = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = 10 * 1000 * 1000,
+        .mem_block_symbols = 64,
+        .flags = {
+            .with_dma = false,
+        },
+    };
+
+    esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config, &ws2812b->strip_handle);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "LED strip init failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
+
+    ESP_LOGI(TAG, "WS2812B 初始化完成");
+    return 0;
+}
+
+static int ws2812b_read(void *self, void *buf, size_t len)
+{
+    struct ws2812b *ws2812b = (struct ws2812b *)self;
+
+    if (len < 3)
+        return -1;
+
+    uint8_t *rgb = (uint8_t *)buf;
+    rgb[0] = ws2812b->red;
+    rgb[1] = ws2812b->green;
+    rgb[2] = ws2812b->blue;
+
+    return 3;
+}
+
+static int ws2812b_write(void *self, const void *buf, size_t len)
+{
+    struct ws2812b *ws2812b = (struct ws2812b *)self;
+
+    if (len < 3)
+        return -1;
+
+    const uint8_t *rgb = (const uint8_t *)buf;
+    ws2812b->red = rgb[0];
+    ws2812b->green = rgb[1];
+    ws2812b->blue = rgb[2];
+
+    esp_err_t ret = led_strip_set_pixel(ws2812b->strip_handle, 0,
+                                        ws2812b->red,
+                                        ws2812b->green,
+                                        ws2812b->blue);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "LED set pixel failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
+
+    ret = led_strip_refresh(ws2812b->strip_handle);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "LED refresh failed: %s", esp_err_to_name(ret));
+        return -1;
+    }
+
+    return 3;
+}
+
+static int ws2812b_deinit(void *self)
+{
+    struct ws2812b *ws2812b = (struct ws2812b *)self;
+
+    if (ws2812b->strip_handle)
+    {
+        led_strip_del(ws2812b->strip_handle);
+        ws2812b->strip_handle = NULL;
+    }
+
+    return 0;
+}
+
+static const struct DeviceOps ws2812b_ops = {
+    .init = ws2812b_init,
+    .read = ws2812b_read,
+    .write = ws2812b_write,
+    .deinit = ws2812b_deinit,
+};
+
+static struct Device g_ws2812b_device = {
+    .name = "ws2812b",
+    .data = &g_ws2812b,
+    .ops = &ws2812b_ops,
+};
+
+struct Device *Ws2812b_get_device(void)
+{
+    return &g_ws2812b_device;
+}
+
+===== 文件: drivers\ws2812b.h =====
+#ifndef WS2812B_H
+#define WS2812B_H
+
+#include <stdint.h>
+#include "led_strip.h"
+
+struct Device;
+
+struct ws2812b
+{
+    uint8_t red;
+    uint8_t green;
+    uint8_t blue;
+    led_strip_handle_t strip_handle; // LED 灯条句柄
+};
+
+struct Device *Ws2812b_get_device(void);
+
+#endif
+
+===== 文件: framework\array.c =====
+#include <string.h> // 为了 memcpy
+#include <stdlib.h> // 为了 realloc / free
+
+#include "array.h"
+
+void array_init(struct Array *arr, size_t element_size)
+{
+    arr->data = NULL;
+    arr->size = 0;
+    arr->capacity = 0;
+    arr->element_size = element_size;
+}
+
+int array_push_back(struct Array *arr, const void *element)
+{
+    if (arr->size >= arr->capacity)
+    {
+        size_t new_capacity = (arr->capacity == 0) ? 1 : arr->capacity * 2;
+        void *new_data = realloc(arr->data, new_capacity * arr->element_size);
+        if (!new_data)
+        {
+            return -1; // Allocation failed
+        }
+        arr->data = new_data;
+        arr->capacity = new_capacity;
+    }
+
+    memcpy((char *)arr->data + arr->size * arr->element_size, element, arr->element_size);
+    arr->size++;
+    return 0; // Success
+}
+
+int array_get(const struct Array *arr, size_t index, void *out)
+{
+    if (index < arr->size)
+    {
+        memcpy(out, (char *)arr->data + index * arr->element_size, arr->element_size);
+        return 0; // Success
+    }
+    return -1; // Index out of bounds
+}
+
+size_t array_size(const struct Array *arr)
+{
+    return arr->size;
+}
+
+void array_free(struct Array *arr)
+{
+    free(arr->data);
+    arr->data = NULL;
+    arr->size = 0;
+    arr->capacity = 0;
+}
+
+int array_remove(struct Array *arr, size_t index)
+{
+    if (index >= arr->size)
+        return -1;
+
+    size_t bytes_to_move = (arr->size - index - 1) * arr->element_size;
+
+    if (bytes_to_move > 0)
+    {
+        char *dest = (char *)arr->data + index * arr->element_size;
+        char *src = dest + arr->element_size;
+        memmove(dest, src, bytes_to_move);
+    }
+
+    arr->size--;
+    return 0;
+}
+
+void array_clear(struct Array *arr)
+{
+    arr->size = 0;
+}
+
+===== 文件: framework\array.h =====
+#ifndef ARRAY_H
+#define ARRAY_H
+
+#include <stddef.h>
+
+struct Array
+{
+    void *data;
+    size_t size;
+    size_t capacity;
+    size_t element_size;
+};
+
+void array_init(struct Array *arr, size_t element_size);
+int array_push_back(struct Array *arr, const void *element);
+int array_get(const struct Array *arr, size_t index, void *out);
+size_t array_size(const struct Array *arr);
+void array_free(struct Array *arr);
+int array_remove(struct Array *arr, size_t index);
+void array_clear(struct Array *arr);
+
+#endif // ARRAY_H
+
+===== 文件: framework\framework.c =====
+/**
+ * @file framework.c
+ * @brief 设备框架实现
+ *
+ * 实现设备链表管理、注册、查找、初始化以及线程安全保护。
+ */
+#include "framework.h"
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "esp_log.h"
+
+static const char *TAG = "framework";
+
+/** 全局设备链表头 */
+static struct list_head g_device_list = {
+    .next = &g_device_list,
+    .prev = &g_device_list,
+};
+
+/** 保护设备链表的互斥锁 */
+static SemaphoreHandle_t g_device_mutex = NULL;
+
+int device_register(struct Device *dev)
+{
+    if (dev == NULL || dev->name == NULL || dev->ops == NULL)
+    {
+        ESP_LOGE(TAG, "Invalid device parameters");
+        return -1;
+    }
+
+    if (g_device_mutex == NULL)
+    {
+        g_device_mutex = xSemaphoreCreateMutex();
+        if (g_device_mutex == NULL)
+        {
+            ESP_LOGE(TAG, "Failed to create mutex");
+            return -1;
+        }
+    }
+
+    xSemaphoreTake(g_device_mutex, portMAX_DELAY);
+
+    /* 检查重名 */
+    struct list_head *pos;
+    list_for_each(pos, &g_device_list)
+    {
+        struct Device *d = container_of(pos, struct Device, node);
+        if (strcmp(d->name, dev->name) == 0)
+        {
+            ESP_LOGE(TAG, "Device name '%s' already exists", dev->name);
+            xSemaphoreGive(g_device_mutex);
+            return -1;
+        }
+    }
+
+    list_append(&g_device_list, &dev->node);
+    xSemaphoreGive(g_device_mutex);
+    return 0;
+}
+
+struct Device *device_find(const char *name)
+{
+    if (name == NULL || g_device_mutex == NULL)
+    {
+        return NULL;
+    }
+
+    xSemaphoreTake(g_device_mutex, portMAX_DELAY);
+    struct list_head *pos;
+    list_for_each(pos, &g_device_list)
+    {
+        struct Device *dev = container_of(pos, struct Device, node);
+        if (strcmp(dev->name, name) == 0)
+        {
+            xSemaphoreGive(g_device_mutex);
+            return dev;
+        }
+    }
+    xSemaphoreGive(g_device_mutex);
+    return NULL;
+}
+
+int device_init_all(void)
+{
+    if (g_device_mutex == NULL)
+    {
+        return -1;
+    }
+
+    xSemaphoreTake(g_device_mutex, portMAX_DELAY);
+    struct list_head *pos;
+    list_for_each(pos, &g_device_list)
+    {
+        struct Device *dev = container_of(pos, struct Device, node);
+        if (dev->ops && dev->ops->init)
+        {
+            int ret = dev->ops->init(dev->data);
+            if (ret != 0)
+            {
+                ESP_LOGE(TAG, "Device '%s' init failed (ret=%d)", dev->name, ret);
+            }
+        }
+    }
+    xSemaphoreGive(g_device_mutex);
+    return 0;
+}
+
+void device_for_each(void (*callback)(struct Device *dev, void *arg), void *arg)
+{
+    if (callback == NULL || g_device_mutex == NULL)
+    {
+        return;
+    }
+
+    xSemaphoreTake(g_device_mutex, portMAX_DELAY);
+    struct list_head *pos;
+    list_for_each(pos, &g_device_list)
+    {
+        struct Device *dev = container_of(pos, struct Device, node);
+        callback(dev, arg);
+    }
+    xSemaphoreGive(g_device_mutex);
+}
+
+void list_append(struct list_head *head, struct list_head *new_node)
+{
+    new_node->next = head;
+    new_node->prev = head->prev;
+    head->prev->next = new_node;
+    head->prev = new_node;
+}
+
+void list_del(struct list_head *item)
+{
+    item->prev->next = item->next;
+    item->next->prev = item->prev;
+    item->next = item;
+    item->prev = item;
+}
+
+===== 文件: framework\framework.h =====
+/**
+ * @file framework.h
+ * @brief 设备框架核心头文件
+ *
+ * 提供统一的设备模型、链表管理、设备注册/查找/初始化接口。
+ * 所有设备驱动与应用层应基于此框架开发。
+ */
+#ifndef FRAMEWORK_H
+#define FRAMEWORK_H
+
+#include <stddef.h>
+
+/**
+ * @brief 通用双向链表节点
+ *
+ * 嵌入到需要链表管理的数据结构中，实现类似于 Linux 内核的链表。
+ */
+struct list_head
+{
+    struct list_head *next; ///< 指向下一个节点
+    struct list_head *prev; ///< 指向前一个节点
+};
+
+/**
+ * @brief 通过成员指针获取包含该成员的结构体指针
+ * @param ptr   成员指针
+ * @param type  包含该成员的结构体类型
+ * @param member 成员在结构体中的名称
+ */
+#define container_of(ptr, type, member) \
+    ((type *)((char *)(ptr) - offsetof(type, member)))
+
+/**
+ * @brief 设备操作表
+ *
+ * 每个设备驱动必须实现此结构体中定义的函数指针，
+ * 以便框架统一调用。
+ */
+struct DeviceOps
+{
+    int (*init)(void *self);                               ///< 初始化设备
+    int (*read)(void *self, void *buf, size_t len);        ///< 读设备
+    int (*write)(void *self, const void *buf, size_t len); ///< 写设备
+    int (*deinit)(void *self);                             ///< 反初始化设备
+};
+
+/**
+ * @brief 设备结构体
+ *
+ * 描述一个具体设备，包含名称、私有数据、操作表以及链表节点。
+ * 所有设备应通过 device_register 注册到系统中。
+ */
+struct Device
+{
+    const char *name;            ///< 设备名称（唯一标识）
+    void *data;                  ///< 指向设备私有数据
+    const struct DeviceOps *ops; ///< 设备操作表指针
+    struct list_head node;       ///< 用于链表的节点
+};
+
+/**
+ * @brief 注册设备到全局设备链表
+ * @param dev 指向待注册设备的指针
+ * @return 0 成功；-1 失败（参数无效或设备名重复）
+ */
+int device_register(struct Device *dev);
+
+/**
+ * @brief 按名称查找设备
+ * @param name 设备名称
+ * @return 找到的设备指针；未找到返回 NULL
+ */
+struct Device *device_find(const char *name);
+
+/**
+ * @brief 初始化所有已注册设备
+ * @return 0 成功；-1 失败（链表互斥锁未创建）
+ *
+ * 遍历设备链表，对每个设备调用其 ops->init。
+ * 若某设备初始化失败，记录错误但继续初始化其他设备。
+ */
+int device_init_all(void);
+
+/**
+ * @brief 遍历所有已注册设备
+ * @param callback 回调函数，对每个设备调用一次
+ * @param arg      传递给回调函数的用户参数
+ *
+ * 回调函数原型：void callback(struct Device *dev, void *arg);
+ */
+void device_for_each(void (*callback)(struct Device *dev, void *arg), void *arg);
+
+/* 链表操作函数 */
+void list_append(struct list_head *head, struct list_head *new_node);
+void list_del(struct list_head *item);
+
+/**
+ * @brief 遍历链表宏
+ * @param pos  当前遍历到的节点指针
+ * @param head 链表头
+ */
+#define list_for_each(pos, head) \
+    for (pos = (head)->next; pos != (head); pos = pos->next)
+
+#endif // FRAMEWORK_H
+
+===== 文件: idf_component.yml =====
+dependencies:
+  espressif/led_strip: '*'
+  espressif/esp_lvgl_port: '*'
+
+===== 文件: main.c =====
+#include "framework/framework.h"
+
+#include "drivers/key.h"
+#include "drivers/internal_temp.h"
+#include "drivers/battery.h"
+#include "drivers/sys_uptime.h"
+#include "drivers/display.h"
+#include "drivers/backlight.h"
+#include "drivers/uart_ph2.h"
+#include "drivers/led.h"
+#include "drivers/sensor.h"
+
+#include "app/app_key_task.h"
+#include "app/app_temp_task.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_log.h"
+#include <string.h>
+
+QueueHandle_t key_queue;
+
+void app_main(void)
+{
+    // 1. 注册所有设备
+    device_register(Key_create(46, "key_a"));
+    device_register(Key_create(45, "key_b"));
+    device_register(InternalTemp_get_device());
+    device_register(Battery_get_device());
+    device_register(SysUptime_get_device());
+    device_register(Display_get_device());
+    device_register(Backlight_get_device());
+    device_register(UartPh2_get_device());
+    device_register(Led_get_device());
+    device_register(VirtualSensor_get_device());
+
+    // 2. 统一初始化所有设备
+    if (device_init_all() != 0)
+    {
+        ESP_LOGE("main", "Device initialization failed");
+        return;
+    }
+
+    // 3. 创建消息队列（用于按键事件）
+    key_queue = xQueueCreate(10, sizeof(int));
+
+    // 4. 创建应用任务
+    xTaskCreate(key_task, "key_task", 4096, NULL, 5, NULL);
+    xTaskCreate(temp_task, "temp_task", 4096, NULL, 4, NULL);
+
+    ESP_LOGI("main", "System started");
+}
+
