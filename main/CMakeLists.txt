@@ -15,6 +15,7 @@ idf_component_register(
         "drivers/backlight.c"
         "drivers/uart_ph2.c"
         "components/command_handler.c"
+        "app/app_ui_task.c"
     REQUIRES
         esp_lcd
         esp_driver_gpio

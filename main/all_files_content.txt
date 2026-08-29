@@ -15,6 +15,8 @@ idf_component_register(
         "drivers/display.c"
         "drivers/backlight.c"
         "drivers/uart_ph2.c"
+        "components/command_handler.c"
+        "app/app_ui_task.c"
     REQUIRES
         esp_lcd
         esp_driver_gpio
@@ -25,7 +27,7 @@ idf_component_register(
         esp_driver_ledc
         esp_driver_uart
         esp_driver_spi
-        esp_lvgl_port          
+        esp_lvgl_port
     INCLUDE_DIRS "."
 )
 
@@ -135,7 +137,9 @@ void led_task(void *arg)
         return;
     }
 
-    int color_index = 0;
+    // 初始索引设为 3（灭），因为 ws2812b_init 中 LED 已关闭
+    // 第一次按键 → 索引 0（红色），与实际显示状态一致
+    int color_index = 3;
 
     uint8_t red[3] = {255, 0, 0};
     uint8_t green[3] = {0, 255, 0};
@@ -238,14 +242,142 @@ void temp_task(void *arg);
 
 #endif
 
+===== 文件: app\app_ui_task.c =====
+#include "app/app_ui_task.h"
+#include "framework/framework.h"
+#include "drivers/internal_temp.h"
+#include "drivers/battery.h"
+#include "drivers/sys_uptime.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "lvgl.h"
+#include "esp_lvgl_port.h"
+
+static const char *TAG = "app_ui";
+
+// UI 对象句柄（全局静态，便于更新）
+static lv_obj_t *temp_label;
+static lv_obj_t *battery_label;
+static lv_obj_t *uptime_label;
+
+// 创建 UI 布局
+static void create_ui(void)
+{
+    lvgl_port_lock(0);
+
+    // 清屏
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);
+
+    // 标题
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, "Sensor Dashboard");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    // 温度标签
+    temp_label = lv_label_create(scr);
+    lv_label_set_text(temp_label, "Temperature: -- °C");
+    lv_obj_set_style_text_color(temp_label, lv_color_hex(0xFF8800), 0);
+    lv_obj_align(temp_label, LV_ALIGN_TOP_MID, 0, 50);
+
+    // 电池标签
+    battery_label = lv_label_create(scr);
+    lv_label_set_text(battery_label, "Battery: -- mV (--%)");
+    lv_obj_set_style_text_color(battery_label, lv_color_hex(0x00FF00), 0);
+    lv_obj_align(battery_label, LV_ALIGN_TOP_MID, 0, 90);
+
+    // 运行时间标签
+    uptime_label = lv_label_create(scr);
+    lv_label_set_text(uptime_label, "Uptime: -- s");
+    lv_obj_set_style_text_color(uptime_label, lv_color_hex(0x00CCFF), 0);
+    lv_obj_align(uptime_label, LV_ALIGN_TOP_MID, 0, 130);
+
+    lvgl_port_unlock();
+}
+
+// 更新 UI 数据
+static void update_ui(void)
+{
+    // 获取设备
+    struct Device *temp_dev = device_find("internal_temp");
+    struct Device *bat_dev = device_find("battery");
+    struct Device *uptime_dev = device_find("sys_uptime");
+
+    float temp = 0.0f;
+    if (temp_dev && temp_dev->ops && temp_dev->ops->read)
+    {
+        temp_dev->ops->read(temp_dev->data, &temp, sizeof(temp));
+    }
+
+    struct Battery bat = {0};
+    if (bat_dev && bat_dev->ops && bat_dev->ops->read)
+    {
+        bat_dev->ops->read(bat_dev->data, &bat, sizeof(bat));
+    }
+
+    uint32_t uptime_sec = 0;
+    if (uptime_dev && uptime_dev->ops && uptime_dev->ops->read)
+    {
+        uptime_dev->ops->read(uptime_dev->data, &uptime_sec, sizeof(uptime_sec));
+    }
+
+    // 更新 LVGL 标签（必须加锁）
+    lvgl_port_lock(0);
+    if (temp_label)
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Temperature: %.1f °C", temp);
+        lv_label_set_text(temp_label, buf);
+    }
+    if (battery_label)
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Battery: %d mV (%d%%)", bat.voltage_mv, bat.percent);
+        lv_label_set_text(battery_label, buf);
+    }
+    if (uptime_label)
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Uptime: %lu s", (unsigned long)uptime_sec);
+        lv_label_set_text(uptime_label, buf);
+    }
+    lvgl_port_unlock();
+}
+
+// UI 任务主函数
+void ui_task(void *arg)
+{
+    ESP_LOGI(TAG, "UI 任务启动");
+
+    // 1. 创建初始 UI
+    create_ui();
+
+    // 2. 主循环：每 2 秒更新一次数据
+    while (1)
+    {
+        update_ui();
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
+===== 文件: app\app_ui_task.h =====
+#ifndef APP_UI_TASK_H
+#define APP_UI_TASK_H
+
+void ui_task(void *arg);
+
+#endif // APP_UI_TASK_H
+
 ===== 文件: components\command_handler.c =====
 #include "command_handler.h"
 #include "framework/framework.h"
 #include "drivers/backlight.h"
-#include "drivers/display.h"
 #include "drivers/battery.h"
 #include "drivers/internal_temp.h"
 #include "drivers/sys_uptime.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -268,7 +400,9 @@ typedef struct
 static cmd_entry_t s_cmd_table[MAX_CMDS];
 static int s_cmd_count = 0;
 
-// 默认命令实现（示例）
+// ===== 默认命令实现 =====
+
+// 命令：循环切换背光亮度（0% -> 50% -> 100% -> 0%）
 static void cmd_backlight_toggle(void *arg)
 {
     static uint8_t level = 50; // 初始 50%
@@ -292,19 +426,13 @@ static void cmd_backlight_toggle(void *arg)
     }
 }
 
+// 命令：打印传感器信息到日志（温度、电池、运行时间）
+// 绑定到 key_b
 static void cmd_show_sensor_info(void *arg)
 {
-    // 读取温度、电池、运行时间并显示在屏幕上
     struct Device *temp = device_find("internal_temp");
     struct Device *bat = device_find("battery");
     struct Device *uptime = device_find("sys_uptime");
-    struct Device *disp = device_find("display");
-
-    if (!disp)
-    {
-        ESP_LOGE(TAG, "显示设备未找到");
-        return;
-    }
 
     float temperature = 0.0f;
     if (temp && temp->ops && temp->ops->read)
@@ -318,28 +446,14 @@ static void cmd_show_sensor_info(void *arg)
     if (uptime && uptime->ops && uptime->ops->read)
         uptime->ops->read(uptime->data, &uptime_sec, sizeof(uptime_sec));
 
-    // 简单清屏并显示文字（暂时用填充色块模拟，后面可扩展字体）
-    // 这里我们只打印到日志，实际显示需要字体库，先简化
     ESP_LOGI(TAG, "=== 传感器信息 ===");
     ESP_LOGI(TAG, "温度: %.1f °C", temperature);
     ESP_LOGI(TAG, "电池: %d mV (%d%%)", bat_data.voltage_mv, bat_data.percent);
-    ESP_LOGI(TAG, "运行时间: %d 秒", uptime_sec);
-
-    // 在屏幕上显示彩色矩形表示不同数据（示范）
-    if (disp && disp->ops && disp->ops->write)
-    {
-        // 简单显示一个颜色块，表示命令已执行
-        uint16_t color = 0x07E0; // 绿色
-        // 我们可以调用 display_fill_rect 在屏幕上显示一个矩形
-        // 但 display.c 中提供了 display_fill_rect 函数，需要包含头文件
-        // 这里我们调用 display_fill_rect（需要外部声明）
-        // 因为 display_fill_rect 不是 DeviceOps 的一部分，所以我们要包含 display.h
-        // 或者直接使用 ops->write 传递帧缓冲，但比较复杂。
-        // 为了简化，我们只打印日志，后面如果需要显示文字，可以扩展 display_manager 组件。
-    }
+    ESP_LOGI(TAG, "运行时间: %lu 秒", (unsigned long)uptime_sec);
 }
 
-// 内部命令处理任务
+// ===== 内部命令处理任务 =====
+
 static void cmd_task(void *arg)
 {
     ESP_LOGI(TAG, "命令处理器任务启动");
@@ -350,11 +464,12 @@ static void cmd_task(void *arg)
         if (xQueueReceive(key_queue, &msg, portMAX_DELAY) == pdTRUE)
         {
             ESP_LOGD(TAG, "收到按键消息: %d", msg);
-            // 根据消息值查找命令 ID（此处直接映射）
+
+            // app_key_task 发送 key_id: 0=key_a, 1=key_b
             uint32_t cmd_id = 0;
-            if (msg == 1)
+            if (msg == 0)
                 cmd_id = CMD_KEY_A_SHORT;
-            else if (msg == 2)
+            else if (msg == 1)
                 cmd_id = CMD_KEY_B_SHORT;
             else
                 continue;
@@ -383,10 +498,12 @@ static void cmd_task(void *arg)
     }
 }
 
+// ===== 公开接口 =====
+
 int command_handler_init(void)
 {
     // 1. 注册默认命令
-    // key_a: 切换背光
+    // key_a: 切换背光亮度
     if (command_handler_register(CMD_KEY_A_SHORT, cmd_backlight_toggle, NULL) != 0)
     {
         ESP_LOGE(TAG, "注册背光命令失败");
@@ -397,14 +514,14 @@ int command_handler_init(void)
         ESP_LOGE(TAG, "注册传感器信息命令失败");
     }
 
-    // 2. 创建任务（优先级略低于应用任务）
-    if (xTaskCreate(cmd_task, "cmd_handler", 2048, NULL, 4, NULL) != pdPASS)
+    // 2. 创建任务（优先级略低于 key_task）
+    if (xTaskCreate(cmd_task, "cmd_handler", 4096, NULL, 4, NULL) != pdPASS)
     {
         ESP_LOGE(TAG, "创建命令处理任务失败");
         return -1;
     }
 
-    ESP_LOGI(TAG, "命令处理器初始化完成");
+    ESP_LOGI(TAG, "命令处理器初始化完成（key_a→背光, key_b→传感器信息）");
     return 0;
 }
 
@@ -877,6 +994,7 @@ struct Device *Battery_get_device(void);
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <string.h>
+#include <stdlib.h>
 #include "esp_lvgl_port.h"
 #include "lvgl.h"
 
@@ -888,9 +1006,7 @@ static const char *TAG = "display";
 #define PIN_LCD_CS 15
 #define PIN_LCD_DC 14
 #define PIN_LCD_RST -1
-// 注意：背光由 backlight 驱动控制，此处不再定义 PIN_LCD_BL
-#define PIN_LCD_BL 16
-
+// 注意：背光由 backlight.c 驱动通过 LEDC 控制 GPIO 16，此处不再操作该引脚
 
 #define LCD_WIDTH 240
 #define LCD_HEIGHT 240
@@ -903,25 +1019,17 @@ static struct Display g_display;
      ((uint16_t)(((uint8_t)(g) >> 2) & 0x3F) << 5) |  \
      ((uint16_t)(((uint8_t)(b) >> 3) & 0x1F)))
 
-// 颜色通道翻转：标准 RGB565 转面板需要的 BGR565
-static inline uint16_t display_swap_green_blue(uint16_t color)
+// RGB565 转 BGR565：交换红蓝通道，适配 LCD_RGB_ELEMENT_ORDER_BGR 面板配置
+static inline uint16_t display_swap_red_blue(uint16_t color)
 {
-    return (color & 0xF800) | ((color & 0x001F) << 5) | ((color & 0x07E0) >> 5);
+    return ((color & 0x001F) << 11) | (color & 0x07E0) | ((color & 0xF800) >> 11);
 }
 
 static int display_init(void *self)
 {
     struct Display *disp = (struct Display *)self;
 
-    // ===== 1. 背光（保持不变） =====
-    gpio_config_t bl_conf = {
-        .pin_bit_mask = 1ULL << PIN_LCD_BL,
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&bl_conf);
-    gpio_set_level(PIN_LCD_BL, 1);
-
-    // ===== 2. SPI 总线初始化（保持不变） =====
+    // ===== 1. SPI 总线初始化 =====
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = PIN_LCD_MOSI,
         .miso_io_num = -1,
@@ -932,7 +1040,7 @@ static int display_init(void *self)
     };
     ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
 
-    // ===== 3. 创建 LCD 面板 IO（保持不变） =====
+    // ===== 2. 创建 LCD 面板 IO =====
     esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num = PIN_LCD_DC,
@@ -945,7 +1053,7 @@ static int display_init(void *self)
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI3_HOST, &io_config, &io_handle));
 
-    // ===== 4. 创建 ST7789 面板（保持不变） =====
+    // ===== 3. 创建 ST7789 面板 =====
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = PIN_LCD_RST,
         .bits_per_pixel = 16,
@@ -953,7 +1061,7 @@ static int display_init(void *self)
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &disp->panel_handle));
 
-    // ===== 5. 初始化面板（保持不变） =====
+    // ===== 4. 初始化面板 =====
     ESP_ERROR_CHECK(esp_lcd_panel_reset(disp->panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel_handle, true));
@@ -962,7 +1070,16 @@ static int display_init(void *self)
     disp->width = LCD_WIDTH;
     disp->height = LCD_HEIGHT;
 
-    // ===== 6. ✨ 新增：初始化 LVGL 端口 =====
+    // ===== 5. 分配行缓冲（用于 display_fill_rect 等直接绘制函数） =====
+    // 使用 DMA 内存，确保 SPI 传输兼容
+    disp->line_buffer = heap_caps_malloc(LCD_WIDTH * sizeof(uint16_t), MALLOC_CAP_DMA);
+    if (disp->line_buffer == NULL)
+    {
+        ESP_LOGE(TAG, "line_buffer 分配失败");
+        return -1;
+    }
+
+    // ===== 6. 初始化 LVGL 端口 =====
     const lvgl_port_cfg_t lvgl_cfg = {
         .task_priority = 4,       // LVGL 任务优先级
         .task_stack = 4096,       // 堆栈大小
@@ -972,7 +1089,7 @@ static int display_init(void *self)
     };
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
-    // ===== 7. ✨ 新增：将 LCD 面板添加到 LVGL =====
+    // ===== 7. 将 LCD 面板添加到 LVGL =====
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = disp->panel_handle,
@@ -993,18 +1110,13 @@ static int display_init(void *self)
     };
     lvgl_port_add_disp(&disp_cfg);
 
-    // ===== 8. 可选：显示一个 LVGL 演示界面（验证用） =====
-    lvgl_port_lock(0);
-    // lv_demo_widgets(); // LVGL 自带的小部件演示
-    lvgl_port_unlock();
-
-    ESP_LOGI(TAG, "LVGL 初始化完成，240x240");
+    ESP_LOGI(TAG, "显示初始化完成，240x240，LVGL 已接管");
     return 0;
 }
 
 static int display_write(void *self, const void *buf, size_t len)
 {
-    // LVGL 接管，此函数可以空实现或返回错误
+    // LVGL 接管显示，此函数空实现
     return 0;
 }
 
@@ -1018,8 +1130,8 @@ static void display_fill_rect_internal(struct Display *disp,
                                        int x, int y, int w, int h,
                                        uint16_t color)
 {
-    // 统一颜色转换
-    color = display_swap_green_blue(color);
+    // 适配 BGR 面板：交换红蓝通道
+    color = display_swap_red_blue(color);
 
     // 边界裁剪
     if (x < 0)
@@ -2294,7 +2406,6 @@ void list_del(struct list_head *item);
 
 ===== 文件: idf_component.yml =====
 dependencies:
-  espressif/led_strip: '*'
   espressif/esp_lvgl_port: '*'
 
 ===== 文件: main.c =====
@@ -2312,12 +2423,17 @@ dependencies:
 
 #include "app/app_key_task.h"
 #include "app/app_temp_task.h"
+#include "app/app_ui_task.h"
+
+#include "components/command_handler.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include <string.h>
+
+static const char *TAG = "main";
 
 QueueHandle_t key_queue;
 
@@ -2338,17 +2454,23 @@ void app_main(void)
     // 2. 统一初始化所有设备
     if (device_init_all() != 0)
     {
-        ESP_LOGE("main", "Device initialization failed");
+        ESP_LOGE(TAG, "Device initialization failed");
         return;
     }
 
     // 3. 创建消息队列（用于按键事件）
     key_queue = xQueueCreate(10, sizeof(int));
 
-    // 4. 创建应用任务
+    // 4. 初始化命令处理器（内部创建 cmd_task 消费 key_queue，
+    //    注册默认命令：key_a→背光切换，key_b→显示传感器信息）
+    command_handler_init();
+
+    // 5. 创建应用任务
     xTaskCreate(key_task, "key_task", 4096, NULL, 5, NULL);
     xTaskCreate(temp_task, "temp_task", 4096, NULL, 4, NULL);
 
-    ESP_LOGI("main", "System started");
+    // 创建 UI 任务（优先级可设为 3，低于 key_task 和 temp_task）
+    xTaskCreate(ui_task, "ui_task", 4096, NULL, 3, NULL);
+    ESP_LOGI(TAG, "System started");
 }
 

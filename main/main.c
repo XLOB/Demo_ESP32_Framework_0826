@@ -12,6 +12,7 @@
 
 #include "app/app_key_task.h"
 #include "app/app_temp_task.h"
+#include "app/app_ui_task.h"
 
 #include "components/command_handler.h"
 
@@ -57,5 +58,7 @@ void app_main(void)
     xTaskCreate(key_task, "key_task", 4096, NULL, 5, NULL);
     xTaskCreate(temp_task, "temp_task", 4096, NULL, 4, NULL);
 
+    // 创建 UI 任务（优先级可设为 3，低于 key_task 和 temp_task）
+    xTaskCreate(ui_task, "ui_task", 4096, NULL, 3, NULL);
     ESP_LOGI(TAG, "System started");
 }

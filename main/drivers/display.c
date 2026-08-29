@@ -36,11 +36,7 @@ static struct Display g_display;
      ((uint16_t)(((uint8_t)(g) >> 2) & 0x3F) << 5) |  \
      ((uint16_t)(((uint8_t)(b) >> 3) & 0x1F)))
 
-// RGB565 转 BGR565：交换红蓝通道，适配 LCD_RGB_ELEMENT_ORDER_BGR 面板配置
-static inline uint16_t display_swap_red_blue(uint16_t color)
-{
-    return ((color & 0x001F) << 11) | (color & 0x07E0) | ((color & 0xF800) >> 11);
-}
+// 面板使用标准 RGB565 格式，无需交换红蓝通道
 
 static int display_init(void *self)
 {
@@ -107,6 +103,11 @@ static int display_init(void *self)
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
     // ===== 7. 将 LCD 面板添加到 LVGL =====
+    // 关键：swap_bytes 必须为 true！
+    // SPI 传输 16 位像素时，ESP32 内存是小端序（低字节在前），
+    // 但 ST7789 期望大端序（高字节在前）。不交换字节会导致
+    // 抗锯齿像素值错乱，文字边缘出现"豹纹"斑点。
+    // BGR 颜色顺序由面板 MADCTL 寄存器处理，与字节交换是独立的两件事。
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = disp->panel_handle,
@@ -114,6 +115,7 @@ static int display_init(void *self)
         .double_buffer = true,         // 双缓冲（性能更好）
         .hres = LCD_WIDTH,
         .vres = LCD_HEIGHT,
+        .color_format = LV_COLOR_FORMAT_RGB565,
         .monochrome = false,
         .rotation = {
             .swap_xy = false,
@@ -121,8 +123,9 @@ static int display_init(void *self)
             .mirror_y = false,
         },
         .flags = {
-            .buff_dma = true,    // 使用 DMA 内存
-            .buff_spiram = true, // 使用 PSRAM 作为缓冲（如果有）
+            .buff_dma = true,     // 使用 DMA 内存
+            .buff_spiram = true,  // 使用 PSRAM 作为缓冲（如果有）
+            .swap_bytes = true,   // 交换 RGB565 高低字节（SPI 显示必需）
         },
     };
     lvgl_port_add_disp(&disp_cfg);
@@ -142,14 +145,11 @@ static int display_read(void *self, void *buf, size_t len)
     return -1;
 }
 
-// 内部填充矩形：统一处理颜色交换和裁剪
+// 内部填充矩形：统一处理边界裁剪
 static void display_fill_rect_internal(struct Display *disp,
                                        int x, int y, int w, int h,
                                        uint16_t color)
 {
-    // 适配 BGR 面板：交换红蓝通道
-    color = display_swap_red_blue(color);
-
     // 边界裁剪
     if (x < 0)
     {
