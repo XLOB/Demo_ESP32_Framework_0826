@@ -54,9 +54,6 @@
 │   └── components/                 # 内部组件
 │       └── command_handler.h / .c  # 命令处理组件（预留）
 │
-├── docs/                           # 文档
-│   └── adding_device.md            # 添加新设备教程
-│
 ├── CMakeLists.txt                  # 顶层 CMake
 ├── sdkconfig.defaults              # 默认配置
 ├── partitions.csv                  # 分区表
