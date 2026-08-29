@@ -2,18 +2,20 @@
 #define DISPLAY_H
 
 #include <stddef.h>
-#include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 
 struct Device;
 
 struct Display
 {
-    esp_lcd_panel_handle_t panel_handle; // 改成正确类型
+    esp_lcd_panel_handle_t panel_handle;
     int width;
     int height;
 };
 
 struct Device *Display_get_device(void);
+int display_clear(struct Device *dev, uint16_t color);
+int display_fill_rect(struct Device *dev, int x, int y, int w, int h, uint16_t color);
+static inline uint16_t display_swap_green_blue(uint16_t color);
 
 #endif

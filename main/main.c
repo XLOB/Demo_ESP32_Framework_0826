@@ -48,11 +48,12 @@ void app_main(void)
 
     ////////////////////////////////////////////////////////////////////////////////
 
-    // 查找并初始化
     struct Device *display = device_find("display");
     if (display && display->ops && display->ops->init)
         display->ops->init(display->data);
 
-    // 调 write 让屏幕变红
-    display->ops->write(display->data, NULL, 0);
+    display_clear(display, 0x0000);                        // 清屏黑色
+    display_fill_rect(display, 10, 10, 100, 100, 0xF800);  // 红色矩形
+    display_fill_rect(display, 130, 10, 100, 100, 0x07E0); // 绿色矩形
+    display_fill_rect(display, 70, 130, 100, 100, 0x001F); // 蓝色矩形
 }
