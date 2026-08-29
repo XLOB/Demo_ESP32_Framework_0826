@@ -15,6 +15,7 @@ idf_component_register(
         "drivers/battery.c"
         "drivers/display.c"
         "drivers/backlight.c"
+        "drivers/uart_ph2.c"
     REQUIRES
         esp_lcd
         esp_driver_gpio           # 提供 gpio.h
@@ -23,5 +24,7 @@ idf_component_register(
         driver
         esp_timer
         esp_driver_ledc
+        esp_driver_uart          # 新增
+        esp_driver_spi           # 如果尚未添加，也建议加上（用于显示）
     INCLUDE_DIRS "."
 )
