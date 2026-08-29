@@ -7,12 +7,14 @@
 #include "drivers/display.h"
 #include "drivers/backlight.h"
 #include "drivers/uart_ph2.h"
-#include "drivers/led.h"
 #include "drivers/sensor.h"
+#include "drivers/sd_card.h"
+#include "drivers/ws2812b.h"
 
 #include "app/app_key_task.h"
 #include "app/app_temp_task.h"
 #include "app/app_ui_task.h"
+#include "app/app_led_task.h"
 
 #include "components/command_handler.h"
 
@@ -37,8 +39,9 @@ void app_main(void)
     device_register(Display_get_device());
     device_register(Backlight_get_device());
     device_register(UartPh2_get_device());
-    device_register(Led_get_device());
     device_register(VirtualSensor_get_device());
+    device_register(SdCard_get_device());
+    device_register(Ws2812b_get_device());
 
     // 2. 统一初始化所有设备
     if (device_init_all() != 0)
@@ -58,7 +61,9 @@ void app_main(void)
     xTaskCreate(key_task, "key_task", 4096, NULL, 5, NULL);
     xTaskCreate(temp_task, "temp_task", 4096, NULL, 4, NULL);
 
-    // 创建 UI 任务（优先级可设为 3，低于 key_task 和 temp_task）
+    // 创建 UI 任务（优先级 3，低于 key_task 和 temp_task）
     xTaskCreate(ui_task, "ui_task", 4096, NULL, 3, NULL);
+    xTaskCreate(led_task, "led_task", 4096, NULL, 3, NULL);
+
     ESP_LOGI(TAG, "System started");
 }
