@@ -33,6 +33,12 @@ static struct Display g_display;
      ((uint16_t)(((uint8_t)(g) >> 2) & 0x3F) << 5) |  \
      ((uint16_t)(((uint8_t)(b) >> 3) & 0x1F)))
 
+// 颜色通道翻转：标准 RGB565 转面板需要的 BGR565
+static inline uint16_t display_swap_green_blue(uint16_t color)
+{
+    return (color & 0xF800) | ((color & 0x001F) << 5) | ((color & 0x07E0) >> 5);
+}
+
 static int display_init(void *self)
 {
     struct Display *disp = (struct Display *)self;
@@ -72,9 +78,6 @@ static int display_init(void *self)
         &io_config, &io_handle));
 
     // 4. 创建 ST7789 面板
-    //    注意: AI-VOX3 的 ST7789 面板物理排列是 RGB
-    //    esp_lcd_new_panel_st7789 内部会根据 rgb_ele_order 自动设置 MADCTL 的 BGR 位
-    //    设 RGB = 不翻转颜色通道，设 BGR = 翻转红绿蓝
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = PIN_LCD_RST,
         .bits_per_pixel = 16,
@@ -86,30 +89,25 @@ static int display_init(void *self)
     // 5. 初始化面板
     ESP_ERROR_CHECK(esp_lcd_panel_reset(disp->panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel_handle));
-
-    // 开启颜色反转 — ST7789 默认极性与 AI-VOX3 面板不匹配，需要反色
-    // 不加这行会导致黑底白字变成白底黑字
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel_handle, true));
-
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel_handle, true));
 
     disp->width = LCD_WIDTH;
     disp->height = LCD_HEIGHT;
 
     ESP_LOGI(TAG, "屏幕初始化完成 (ST7789, RGB565, 240x240)");
-
     return 0;
 }
 
-// 内部填充矩形函数：所有写屏操作最终都调用它
-// 使用 DMA 内存分配行缓冲，逐行推送到 LCD
+// 内部填充矩形：所有写屏操作都经过这里，统一处理颜色交换和裁剪
 static void display_fill_rect_internal(struct Display *disp,
                                        int x, int y, int w, int h,
                                        uint16_t color)
 {
-    color = (color & 0xF800) | ((color & 0x001F) << 5) | ((color & 0x07E0) >> 5); // 颜色通道翻转，ST7789 内部是 BGR 排列，而我们使用的是 RGB565
+    // 统一颜色转换
+    color = display_swap_green_blue(color);
 
-    // 参数裁剪
+    // 边界裁剪
     if (x < 0)
     {
         w += x;
@@ -127,7 +125,7 @@ static void display_fill_rect_internal(struct Display *disp,
     if (w <= 0 || h <= 0)
         return;
 
-    // 分配 DMA 可用的行缓冲
+    // DMA 行缓冲
     uint16_t *line = heap_caps_malloc(w * sizeof(uint16_t), MALLOC_CAP_DMA);
     if (!line)
     {
@@ -135,13 +133,11 @@ static void display_fill_rect_internal(struct Display *disp,
         return;
     }
 
-    // 填充行缓冲
     for (int i = 0; i < w; i++)
     {
         line[i] = color;
     }
 
-    // 逐行绘制
     for (int row = y; row < y + h; row++)
     {
         esp_lcd_panel_draw_bitmap(disp->panel_handle,
@@ -153,7 +149,7 @@ static void display_fill_rect_internal(struct Display *disp,
     free(line);
 }
 
-// 绘制完整帧缓冲 (RGB565)
+// 内部绘制整帧图像（暂不处理颜色交换，未来使用时需要额外处理）
 static void display_draw_bitmap_internal(struct Display *disp,
                                          int x, int y, int w, int h,
                                          const uint16_t *bitmap)
@@ -161,11 +157,34 @@ static void display_draw_bitmap_internal(struct Display *disp,
     esp_lcd_panel_draw_bitmap(disp->panel_handle, x, y, x + w, y + h, bitmap);
 }
 
+// 显示简单的 xhyOS Logo（白色 X）
+static void display_show_logo_internal(struct Display *disp)
+{
+    // 清屏黑色
+    display_fill_rect_internal(disp, 0, 0, disp->width, disp->height, 0x0000);
+
+    // 画一个大的 X：两条对角线
+    uint16_t white = 0xFFFF;
+    int step = 10; // 每个方块的边长
+
+    for (int i = 0; i < disp->width; i += step)
+    {
+        // 左上到右下
+        display_fill_rect_internal(disp, i, i, step, step, white);
+        // 右上到左下
+        display_fill_rect_internal(disp, disp->width - i - step, i, step, step, white);
+    }
+
+    // 中心画一个小方块，增加辨识度
+    int center = disp->width / 2;
+    display_fill_rect_internal(disp, center - 20, center - 20, 40, 40, white);
+}
+
 static int display_write(void *self, const void *buf, size_t len)
 {
     struct Display *disp = (struct Display *)self;
 
-    // 如果传入了帧缓冲数据，直接绘制
+    // 如果传入完整帧缓冲，直接绘制
     if (buf && len >= (size_t)LCD_WIDTH * LCD_HEIGHT * 2)
     {
         display_draw_bitmap_internal(disp, 0, 0, LCD_WIDTH, LCD_HEIGHT,
@@ -173,11 +192,8 @@ static int display_write(void *self, const void *buf, size_t len)
         return 0;
     }
 
-    // 没有传入数据时：显示测试画面 (红蓝绿三色条)
-    display_fill_rect_internal(disp, 0, 0, 80, LCD_HEIGHT, 0xF800);   // 红
-    display_fill_rect_internal(disp, 80, 0, 80, LCD_HEIGHT, 0x07E0);  // 绿
-    display_fill_rect_internal(disp, 160, 0, 80, LCD_HEIGHT, 0x001F); // 蓝
-
+    // 否则显示 Logo
+    display_show_logo_internal(disp);
     return 0;
 }
 
@@ -220,7 +236,6 @@ int display_clear(struct Device *dev, uint16_t color)
     if (!dev || !dev->data)
         return -1;
     struct Display *disp = (struct Display *)dev->data;
-
     display_fill_rect_internal(disp, 0, 0, disp->width, disp->height, color);
     return 0;
 }
@@ -230,12 +245,6 @@ int display_fill_rect(struct Device *dev, int x, int y, int w, int h, uint16_t c
     if (!dev || !dev->data)
         return -1;
     struct Display *disp = (struct Display *)dev->data;
-
     display_fill_rect_internal(disp, x, y, w, h, color);
     return 0;
-}
-
-static inline uint16_t display_swap_green_blue(uint16_t color)
-{
-    return (color & 0xF800) | ((color & 0x001F) << 5) | ((color & 0x07E0) >> 5);
 }

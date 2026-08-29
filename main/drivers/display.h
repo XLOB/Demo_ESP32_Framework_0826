@@ -14,8 +14,8 @@ struct Display
 };
 
 struct Device *Display_get_device(void);
+
 int display_clear(struct Device *dev, uint16_t color);
 int display_fill_rect(struct Device *dev, int x, int y, int w, int h, uint16_t color);
-static inline uint16_t display_swap_green_blue(uint16_t color);
 
 #endif

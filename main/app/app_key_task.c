@@ -12,29 +12,38 @@ static const char *TAG = "app_key";
 
 extern QueueHandle_t key_queue;
 
-// 按键回调函数
-static void on_key_event(void)
+// 按键事件回调
+static void on_key_pressed(void)
 {
     int msg = 1;
     if (xQueueSend(key_queue, &msg, 0) == pdTRUE)
     {
-        ESP_LOGI(TAG, "按键事件已发生，消息已发送");
+        ESP_LOGI(TAG, "按键按下，消息已发送");
     }
 }
 
 void key_task(void *arg)
 {
-    struct Device *key_dev = Key_get_device();
+    ESP_LOGI(TAG, "key_task 启动");
 
-    if (key_dev && key_dev->ops && key_dev->ops->init)
-        key_dev->ops->init(key_dev->data);
+    struct Device *key_dev = device_find("key_a");
+    if (key_dev == NULL || key_dev->ops == NULL || key_dev->ops->init == NULL)
+    {
+        ESP_LOGE(TAG, "未找到按键设备");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    key_dev->ops->init(key_dev->data);
 
     // 注册回调
-    Key_set_callback(key_dev, on_key_event);
+    Key_set_callback(key_dev, on_key_pressed);
 
     while (1)
     {
-        Key_poll(key_dev); // 驱动内部检测按键
+        // 驱动内部检测按键，并在事件发生时调用回调
+        Key_poll(key_dev);
+
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }

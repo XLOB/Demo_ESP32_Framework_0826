@@ -14,6 +14,7 @@ idf_component_register(
         "drivers/sys_uptime.c"
         "drivers/battery.c"
         "drivers/display.c"
+        "drivers/backlight.c"
     REQUIRES
         esp_lcd
         esp_driver_gpio           # 提供 gpio.h
@@ -21,5 +22,6 @@ idf_component_register(
         esp_adc
         driver
         esp_timer
+        esp_driver_ledc
     INCLUDE_DIRS "."
 )
