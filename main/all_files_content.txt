@@ -17,6 +17,8 @@ idf_component_register(
         "drivers/backlight.c"
         "drivers/uart_ph2.c"
         "drivers/sd_card.c"
+        "drivers/ws2812b.c"
+        "app/app_led_task.c"
         "components/command_handler.c"
     REQUIRES
         esp_lcd
@@ -31,6 +33,7 @@ idf_component_register(
         esp_lvgl_port
         sdmmc
         fatfs
+        led_strip
     INCLUDE_DIRS "."
 )
 
@@ -2757,8 +2760,8 @@ static int ws2812b_init(void *self)
     led_strip_config_t strip_config = {
         .strip_gpio_num = 41,
         .max_leds = 1,
-        .led_model = LED_MODEL_WS2812,
-        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+        // .led_model = LED_MODEL_WS2812,          // 删除
+        // .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB, // 删除
         .flags = {
             .invert_out = false,
         },
@@ -3238,6 +3241,7 @@ void list_del(struct list_head *item);
 ===== 文件: idf_component.yml =====
 dependencies:
   espressif/esp_lvgl_port: '*'
+  espressif/led_strip: "^2.0.0"
 
 ===== 文件: main.c =====
 #include "framework/framework.h"
@@ -3251,10 +3255,12 @@ dependencies:
 #include "drivers/uart_ph2.h"
 #include "drivers/sensor.h"
 #include "drivers/sd_card.h"
+#include "drivers/ws2812b.h"
 
 #include "app/app_key_task.h"
 #include "app/app_temp_task.h"
 #include "app/app_ui_task.h"
+#include "app/app_led_task.h"
 
 #include "components/command_handler.h"
 
@@ -3281,6 +3287,7 @@ void app_main(void)
     device_register(UartPh2_get_device());
     device_register(VirtualSensor_get_device());
     device_register(SdCard_get_device());
+    device_register(Ws2812b_get_device());
 
     // 2. 统一初始化所有设备
     if (device_init_all() != 0)
@@ -3302,6 +3309,7 @@ void app_main(void)
 
     // 创建 UI 任务（优先级 3，低于 key_task 和 temp_task）
     xTaskCreate(ui_task, "ui_task", 4096, NULL, 3, NULL);
+    xTaskCreate(led_task, "led_task", 4096, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "System started");
 }

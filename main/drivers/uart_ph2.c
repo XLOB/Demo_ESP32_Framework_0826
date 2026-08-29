@@ -1,3 +1,7 @@
+/**
+ * @file uart_ph2.c
+ * @brief PH2.0 接口 UART 驱动实现
+ */
 #include "uart_ph2.h"
 #include "../framework/framework.h"
 
@@ -6,103 +10,130 @@
 
 static const char *TAG = "uart_ph2";
 
-#define PH2_UART_NUM UART_NUM_1
-#define PH2_TX_GPIO 5
-#define PH2_RX_GPIO 6
-#define PH2_UART_BUF_SIZE 256
+static bool s_initialized = false;
 
-static struct UartPh2 g_uart_ph2;
+/* ------------------------------------------------------------------ */
+/* 设备操作函数                                                       */
+/* ------------------------------------------------------------------ */
 
 static int uart_ph2_init(void *self)
 {
-    struct UartPh2 *uart = (struct UartPh2 *)self;
+    (void)self;
 
-    uart_config_t uart_cfg = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+    uart_config_t uart_config = {
+        .baud_rate  = UART_PH2_BAUD_RATE,
+        .data_bits  = UART_DATA_8_BITS,
+        .parity     = UART_PARITY_DISABLE,
+        .stop_bits  = UART_STOP_BITS_1,
+        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    esp_err_t ret = uart_driver_install(PH2_UART_NUM, PH2_UART_BUF_SIZE, 0, 0, NULL, 0);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "UART 驱动安装失败");
+    /* 安装驱动 */
+    esp_err_t ret = uart_driver_install(
+        UART_PH2_PORT_NUM,
+        UART_PH2_BUF_SIZE * 2,  /* rx_buffer_size */
+        UART_PH2_BUF_SIZE * 2,  /* tx_buffer_size */
+        0,                       /* queue_size */
+        NULL,                    /* uart_queue */
+        0                        /* intr_alloc_flags */
+    );
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "UART driver install failed: %s", esp_err_to_name(ret));
         return -1;
     }
 
-    ret = uart_param_config(PH2_UART_NUM, &uart_cfg);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "UART 参数配置失败");
+    /* 配置参数 */
+    ret = uart_param_config(UART_PH2_PORT_NUM, &uart_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "UART param config failed: %s", esp_err_to_name(ret));
         return -1;
     }
 
-    ret = uart_set_pin(PH2_UART_NUM, PH2_TX_GPIO, PH2_RX_GPIO, -1, -1);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "UART 引脚配置失败");
+    /* 设置引脚 */
+    ret = uart_set_pin(
+        UART_PH2_PORT_NUM,
+        UART_PH2_TX_PIN,
+        UART_PH2_RX_PIN,
+        UART_PIN_NO_CHANGE,   /* RTS */
+        UART_PIN_NO_CHANGE    /* CTS */
+    );
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "UART set pin failed: %s", esp_err_to_name(ret));
         return -1;
     }
 
-    uart->uart_num = PH2_UART_NUM;
-    uart->baud_rate = 115200;
+    s_initialized = true;
 
-    ESP_LOGI(TAG, "PH2.0 UART 初始化完成");
+    ESP_LOGI(TAG, "PH2.0 UART 初始化完成（TX=%d, RX=%d, %d baud）",
+             UART_PH2_TX_PIN, UART_PH2_RX_PIN, UART_PH2_BAUD_RATE);
     return 0;
 }
 
 static int uart_ph2_write(void *self, const void *buf, size_t len)
 {
-    struct UartPh2 *uart = (struct UartPh2 *)self;
-
-    if (buf == NULL || len == 0)
+    (void)self;
+    if (!s_initialized || buf == NULL || len == 0)
         return -1;
 
-    int written = uart_write_bytes(uart->uart_num, buf, len);
-    if (written < 0)
-        return -1;
-
-    return written;
+    int ret = uart_write_bytes(UART_PH2_PORT_NUM, buf, len);
+    return ret;
 }
 
 static int uart_ph2_read(void *self, void *buf, size_t len)
 {
-    struct UartPh2 *uart = (struct UartPh2 *)self;
-
-    if (buf == NULL || len == 0)
+    (void)self;
+    if (!s_initialized || buf == NULL || len == 0)
         return -1;
 
-    int read_len = uart_read_bytes(uart->uart_num, buf, len, pdMS_TO_TICKS(100));
-    if (read_len < 0)
-        return -1;
-
-    return read_len;
+    int ret = uart_read_bytes(UART_PH2_PORT_NUM, buf, len, 0);
+    return ret;
 }
 
 static int uart_ph2_deinit(void *self)
 {
-    struct UartPh2 *uart = (struct UartPh2 *)self;
-    uart_driver_delete(uart->uart_num);
+    (void)self;
+    if (s_initialized) {
+        uart_driver_delete(UART_PH2_PORT_NUM);
+        s_initialized = false;
+    }
     return 0;
 }
 
 static const struct DeviceOps uart_ph2_ops = {
-    .init = uart_ph2_init,
-    .read = uart_ph2_read,
-    .write = uart_ph2_write,
+    .init   = uart_ph2_init,
+    .read   = uart_ph2_read,
+    .write  = uart_ph2_write,
     .deinit = uart_ph2_deinit,
 };
 
 static struct Device g_uart_ph2_device = {
     .name = "uart_ph2",
-    .data = &g_uart_ph2,
-    .ops = &uart_ph2_ops,
+    .data = NULL,
+    .ops  = &uart_ph2_ops,
 };
+
+/* ------------------------------------------------------------------ */
+/* 公开辅助函数                                                       */
+/* ------------------------------------------------------------------ */
 
 struct Device *UartPh2_get_device(void)
 {
     return &g_uart_ph2_device;
+}
+
+int uart_ph2_send(const uint8_t *data, size_t len)
+{
+    if (!s_initialized || data == NULL || len == 0)
+        return -1;
+
+    return uart_write_bytes(UART_PH2_PORT_NUM, data, len);
+}
+
+int uart_ph2_recv(uint8_t *buf, size_t len)
+{
+    if (!s_initialized || buf == NULL || len == 0)
+        return -1;
+
+    return uart_read_bytes(UART_PH2_PORT_NUM, buf, len, 0);
 }

@@ -1,3 +1,7 @@
+/**
+ * @file backlight.c
+ * @brief LCD 背光驱动实现（LEDC PWM）
+ */
 #include "backlight.h"
 #include "../framework/framework.h"
 
@@ -8,33 +12,39 @@ static const char *TAG = "backlight";
 
 static struct Backlight g_backlight;
 
+/* ------------------------------------------------------------------ */
+/* 设备操作函数                                                       */
+/* ------------------------------------------------------------------ */
+
 static int backlight_init(void *self)
 {
     struct Backlight *bl = (struct Backlight *)self;
 
-    // 1. 配置 LEDC 定时器
+    /* 1. 配置 LEDC 定时器 */
     ledc_timer_config_t timer_cfg = {
-        .speed_mode = BACKLIGHT_LEDC_MODE,
+        .speed_mode      = BACKLIGHT_LEDC_MODE,
         .duty_resolution = LEDC_TIMER_8_BIT,
-        .timer_num = BACKLIGHT_LEDC_TIMER,
-        .freq_hz = 5000,
-        .clk_cfg = LEDC_AUTO_CLK};
+        .timer_num       = BACKLIGHT_LEDC_TIMER,
+        .freq_hz         = BACKLIGHT_PWM_FREQ_HZ,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
     ledc_timer_config(&timer_cfg);
 
-    // 2. 配置 LEDC 通道
+    /* 2. 配置 LEDC 通道 */
     ledc_channel_config_t channel_cfg = {
         .speed_mode = BACKLIGHT_LEDC_MODE,
-        .channel = BACKLIGHT_LEDC_CHANNEL,
-        .timer_sel = BACKLIGHT_LEDC_TIMER,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = BACKLIGHT_GPIO,
-        .duty = 255, // 初始全亮
-        .hpoint = 0};
+        .channel    = BACKLIGHT_LEDC_CHANNEL,
+        .timer_sel  = BACKLIGHT_LEDC_TIMER,
+        .intr_type  = LEDC_INTR_DISABLE,
+        .gpio_num   = BACKLIGHT_GPIO,
+        .duty       = 255,   /* 初始全亮 */
+        .hpoint     = 0,
+    };
     ledc_channel_config(&channel_cfg);
 
     bl->brightness = 100;
 
-    ESP_LOGI(TAG, "背光驱动初始化完成");
+    ESP_LOGI(TAG, "背光驱动初始化完成，GPIO=%d", BACKLIGHT_GPIO);
     return 0;
 }
 
@@ -49,12 +59,12 @@ static int backlight_write(void *self, const void *buf, size_t len)
     if (percent > 100)
         percent = 100;
 
+    /* 百分比 → 8-bit duty */
     uint32_t duty = (percent * 255) / 100;
     ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
     ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
 
     bl->brightness = percent;
-
     return sizeof(uint8_t);
 }
 
@@ -64,27 +74,29 @@ static int backlight_read(void *self, void *buf, size_t len)
 
     if (len < sizeof(uint8_t))
         return -1;
+
     memcpy(buf, &bl->brightness, sizeof(uint8_t));
     return sizeof(uint8_t);
 }
 
 static int backlight_deinit(void *self)
 {
+    (void)self;
     ledc_stop(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, 0);
     return 0;
 }
 
 static const struct DeviceOps backlight_ops = {
-    .init = backlight_init,
-    .read = backlight_read,
-    .write = backlight_write,
+    .init   = backlight_init,
+    .read   = backlight_read,
+    .write  = backlight_write,
     .deinit = backlight_deinit,
 };
 
 static struct Device g_backlight_device = {
     .name = "backlight",
     .data = &g_backlight,
-    .ops = &backlight_ops,
+    .ops  = &backlight_ops,
 };
 
 struct Device *Backlight_get_device(void)
