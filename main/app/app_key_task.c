@@ -20,10 +20,14 @@ static const char *TAG = "app_key";
 /** 全局按键消息队列（在 main.c 中定义） */
 extern QueueHandle_t key_queue;
 
-/** 按键消息 */
-typedef struct {
-    int key_id;  ///< 0 = key_a, 1 = key_b
-} key_msg_t;
+/**
+ * 按键 ID 定义：
+ *   0 = key_a, 1 = key_b
+ *
+ * 注意：队列元素类型为 int（见 main.c 中 xQueueCreate(10, sizeof(int))），
+ * 发送方和接收方必须使用同一类型，不能包装成结构体再发送，
+ * 否则当结构体因对齐填充导致 sizeof != sizeof(int) 时会内存越界。
+ */
 
 /** 轮询周期（毫秒） */
 #define KEY_POLL_PERIOD_MS  20
@@ -34,15 +38,15 @@ typedef struct {
 
 static void on_key_a_pressed(void)
 {
-    key_msg_t msg = { .key_id = 0 };
-    if (xQueueSend(key_queue, &msg, 0) == pdTRUE)
+    int key_id = 0;
+    if (xQueueSend(key_queue, &key_id, 0) == pdTRUE)
         ESP_LOGD(TAG, "key_a 按下，消息已发送");
 }
 
 static void on_key_b_pressed(void)
 {
-    key_msg_t msg = { .key_id = 1 };
-    if (xQueueSend(key_queue, &msg, 0) == pdTRUE)
+    int key_id = 1;
+    if (xQueueSend(key_queue, &key_id, 0) == pdTRUE)
         ESP_LOGD(TAG, "key_b 按下，消息已发送");
 }
 

@@ -1,12 +1,6 @@
 idf_component_register(
     SRCS
-        # 入口
         "main.c"
-
-        # 框架层
-        "framework/framework.c"
-        "framework/array.c"
-
         # 驱动层
         "drivers/key.c"
         "drivers/internal_temp.c"
@@ -18,16 +12,17 @@ idf_component_register(
         "drivers/sensor.c"
         "drivers/sd_card.c"
         "drivers/ws2812b.c"
-
         # 应用层
         "app/app_key_task.c"
         "app/app_temp_task.c"
         "app/app_ui_task.c"
-
-        # 组件层
+        # 组件层（非独立组件，直接编译）
         "components/command_handler.c"
-
     REQUIRES
+        framework          # 关键：让 main 依赖 framework 组件
+        lua
+        lua_runtime
+        cli
         esp_lcd
         esp_driver_gpio
         esp_driver_tsens
@@ -40,7 +35,7 @@ idf_component_register(
         esp_lvgl_port
         sdmmc
         fatfs
-        led_strip
-
+        # led_strip
+        espressif__led_strip   
     INCLUDE_DIRS "."
 )

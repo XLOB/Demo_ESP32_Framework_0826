@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "framework.c"
+        "array.c"
+        "hashmap.c"
+    INCLUDE_DIRS 
+        "."
+    REQUIRES 
+        freertos
+)

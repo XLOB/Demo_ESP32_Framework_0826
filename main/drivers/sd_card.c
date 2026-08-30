@@ -9,6 +9,7 @@
 #include "esp_vfs_fat.h"
 #include "esp_log.h"
 #include "sdmmc_cmd.h"
+#include "ff.h"
 
 #include <string.h>
 #include <sys/stat.h>
@@ -52,27 +53,28 @@ static int sd_card_init(void *self)
 
     /* 2. 配置插槽引脚 */
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot_config.clk  = SD_PIN_CLK;
-    slot_config.cmd  = SD_PIN_CMD;
-    slot_config.d0   = SD_PIN_D0;
-    slot_config.d1   = SD_PIN_D1;
-    slot_config.d2   = SD_PIN_D2;
-    slot_config.d3   = SD_PIN_D3;
+    slot_config.clk = SD_PIN_CLK;
+    slot_config.cmd = SD_PIN_CMD;
+    slot_config.d0 = SD_PIN_D0;
+    slot_config.d1 = SD_PIN_D1;
+    slot_config.d2 = SD_PIN_D2;
+    slot_config.d3 = SD_PIN_D3;
     slot_config.width = SD_BUS_WIDTH;
     slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
     /* 3. 挂载配置 */
     esp_vfs_fat_mount_config_t mount_config = {
         .format_if_mount_failed = false,
-        .max_files              = 5,
-        .allocation_unit_size   = 16 * 1024,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024,
     };
 
     /* 4. 尝试挂载 */
     esp_err_t ret = esp_vfs_fat_sdmmc_mount(
         SD_MOUNT_POINT, &host, &slot_config, &mount_config, &sd->card);
 
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         ESP_LOGE(TAG, "SD 卡挂载失败: %s (0x%x)", esp_err_to_name(ret), ret);
         if (ret == ESP_ERR_TIMEOUT)
             ESP_LOGE(TAG, "  超时: 请检查 SD 卡是否插入，或引脚连接是否正确");
@@ -99,7 +101,8 @@ static int sd_card_init(void *self)
     /* 6. 读写验证 */
     const char *test_file = SD_MOUNT_POINT "/_sd_test_ok.txt";
     FILE *f = fopen(test_file, "w");
-    if (f) {
+    if (f)
+    {
         fprintf(f, "SD Card SDMMC Test OK\n");
         fclose(f);
         unlink(test_file);
@@ -123,10 +126,10 @@ static int sd_card_read(void *self, void *buf, size_t len)
     DWORD fre_clust, fre_sect, tot_sect;
     f_getfree("0:", &fre_clust, &fs);
 
-    tot_sect  = (fs->n_fatent - 2) * fs->csize;
-    fre_sect  = fre_clust * fs->csize;
+    tot_sect = (fs->n_fatent - 2) * fs->csize;
+    fre_sect = fre_clust * fs->csize;
 
-    sd->free_bytes  = (uint64_t)fre_sect * fs->ssize;
+    sd->free_bytes = (uint64_t)fre_sect * fs->ssize;
     sd->total_bytes = (uint64_t)tot_sect * fs->ssize;
 
     memcpy(buf, sd, sizeof(struct SdCard));
@@ -135,7 +138,9 @@ static int sd_card_read(void *self, void *buf, size_t len)
 
 static int sd_card_write(void *self, const void *buf, size_t len)
 {
-    (void)self; (void)buf; (void)len;
+    (void)self;
+    (void)buf;
+    (void)len;
     return -1; /* 不支持直接写入，使用文件操作函数 */
 }
 
@@ -143,25 +148,26 @@ static int sd_card_deinit(void *self)
 {
     struct SdCard *sd = (struct SdCard *)self;
 
-    if (sd->mounted) {
+    if (sd->mounted)
+    {
         esp_vfs_fat_sdcard_unmount(SD_MOUNT_POINT, sd->card);
         sd->mounted = false;
-        sd->card    = NULL;
+        sd->card = NULL;
     }
     return 0;
 }
 
 static const struct DeviceOps sd_card_ops = {
-    .init   = sd_card_init,
-    .read   = sd_card_read,
-    .write  = sd_card_write,
+    .init = sd_card_init,
+    .read = sd_card_read,
+    .write = sd_card_write,
     .deinit = sd_card_deinit,
 };
 
 static struct Device g_sd_card_device = {
     .name = "sd_card",
     .data = &g_sd_card,
-    .ops  = &sd_card_ops,
+    .ops = &sd_card_ops,
 };
 
 struct Device *SdCard_get_device(void)
@@ -240,7 +246,8 @@ int sd_card_list_files(const char *dir_path)
     ESP_LOGI(TAG, "目录 %s:", dir_path);
     struct dirent *ent;
     int count = 0;
-    while ((ent = readdir(d)) != NULL) {
+    while ((ent = readdir(d)) != NULL)
+    {
         ESP_LOGI(TAG, "  %s", ent->d_name);
         count++;
     }

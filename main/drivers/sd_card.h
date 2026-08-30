@@ -2,7 +2,7 @@
  * @file sd_card.h
  * @brief SD 卡驱动（SDMMC 1-bit 模式）
  *
- * AI-VOX3 SD 卡引脚定义（来自官方文档）：
+ * xhyOS SD 卡引脚定义（来自官方文档）：
  *   CLK  = GPIO39
  *   CMD  = GPIO38
  *   DAT0 = GPIO40
@@ -22,7 +22,7 @@ struct Device;
 
 #define SD_MOUNT_POINT  "/sdcard"   ///< 挂载路径
 
-/* 引脚定义（AI-VOX3 官方配置） */
+/* 引脚定义（xhyOS 官方配置） */
 #define SD_PIN_CLK      39   ///< CLK
 #define SD_PIN_CMD      38   ///< CMD
 #define SD_PIN_D0       40   ///< DAT0

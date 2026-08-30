@@ -13,9 +13,26 @@
 struct Device;
 
 /* ===== 硬件配置 ===== */
+/*
+ * GPIO 分配表（避免冲突）：
+ *   GPIO 14  = LCD DC
+ *   GPIO 15  = LCD CS
+ *   GPIO 16  = Backlight PWM
+ *   GPIO 17  = LCD SPI SCLK  ← 原 UART TX，已移走
+ *   GPIO 18  = UART RX
+ *   GPIO 21  = LCD SPI MOSI
+ *   GPIO 38  = SD CMD
+ *   GPIO 39  = SD CLK
+ *   GPIO 40  = SD DAT0
+ *   GPIO 41  = WS2812B Data
+ *   GPIO 45  = Key B
+ *   GPIO 46  = Key A
+ *
+ *   GPIO 8   = UART TX（空闲引脚，已分配给 PH2.0 接口）
+ */
 
 #define UART_PH2_PORT_NUM   UART_NUM_1
-#define UART_PH2_TX_PIN     17
+#define UART_PH2_TX_PIN     8
 #define UART_PH2_RX_PIN     18
 #define UART_PH2_BAUD_RATE  115200
 #define UART_PH2_BUF_SIZE   1024

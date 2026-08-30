@@ -8,7 +8,9 @@
  *   3. 创建按键消息队列
  *   4. 初始化命令处理器（消费按键事件）
  *   5. 注册额外命令回调（LED 颜色切换等）
- *   6. 启动各应用任务
+ *   6. 初始化 Lua 运行时
+ *   7. 启动 CLI（命令行界面，自动运行）
+ *   8. 启动各应用任务
  */
 #include "framework/framework.h"
 
@@ -28,6 +30,8 @@
 #include "app/app_ui_task.h"
 
 #include "components/command_handler.h"
+#include "lua_runtime.h"
+#include "cli.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,11 +42,11 @@ static const char *TAG = "main";
 
 /* ===== 任务配置 ===== */
 
-#define TASK_STACK_SIZE   4096
-#define KEY_TASK_PRIO     5
-#define CMD_TASK_PRIO     4   /* 与 command_handler 内部任务一致 */
-#define TEMP_TASK_PRIO    4
-#define UI_TASK_PRIO      3
+#define TASK_STACK_SIZE 4096
+#define KEY_TASK_PRIO 5
+#define CMD_TASK_PRIO 4 /* 与 command_handler 内部任务一致 */
+#define TEMP_TASK_PRIO 4
+#define UI_TASK_PRIO 3
 
 /* ===== 全局变量 ===== */
 
@@ -61,9 +65,10 @@ QueueHandle_t key_queue;
  */
 static void cmd_led_color_toggle(void *arg)
 {
+    ESP_LOGI(TAG, "======xhyOS======");
     (void)arg;
 
-    static int color_index = 3;  /* 初始为灭（与 LED 初始状态一致） */
+    static int color_index = 3; /* 初始为灭（与 LED 初始状态一致） */
 
     struct Device *led_dev = device_find("ws2812b");
     if (!led_dev || !led_dev->ops || !led_dev->ops->write)
@@ -73,10 +78,10 @@ static void cmd_led_color_toggle(void *arg)
     color_index = (color_index + 1) % 4;
 
     static const uint8_t colors[4][3] = {
-        { 255,   0,   0 },  /* 红 */
-        {   0, 255,   0 },  /* 绿 */
-        {   0,   0, 255 },  /* 蓝 */
-        {   0,   0,   0 },  /* 灭 */
+        {255, 0, 0}, /* 红 */
+        {0, 255, 0}, /* 绿 */
+        {0, 0, 255}, /* 蓝 */
+        {0, 0, 0},   /* 灭 */
     };
 
     led_dev->ops->write(led_dev->data, colors[color_index], 3);
@@ -105,15 +110,22 @@ void app_main(void)
 
     /* ---- 2. 统一初始化所有设备 ---- */
 
-    if (device_init_all() != 0) {
-        ESP_LOGE(TAG, "Device initialization failed");
+    int init_failed = device_init_all();
+    if (init_failed < 0)
+    {
+        ESP_LOGE(TAG, "Device framework initialization failed");
         return;
+    }
+    if (init_failed > 0)
+    {
+        ESP_LOGW(TAG, "%d device(s) failed to initialize, continuing with remaining devices", init_failed);
     }
 
     /* ---- 3. 创建按键消息队列 ---- */
 
     key_queue = xQueueCreate(10, sizeof(int));
-    if (key_queue == NULL) {
+    if (key_queue == NULL)
+    {
         ESP_LOGE(TAG, "Failed to create key queue");
         return;
     }
@@ -122,16 +134,25 @@ void app_main(void)
 
     command_handler_init();
 
-    /* ---- 5. 注册额外命令回调 ---- */
-
     /* key_a 同时触发背光切换（默认）和 LED 颜色切换 */
     command_handler_register(CMD_KEY_A_SHORT, cmd_led_color_toggle, NULL);
 
-    /* ---- 6. 启动应用任务 ---- */
+    /* ---- 5. 初始化 Lua 运行时 ---- */
 
-    xTaskCreate(key_task,  "key_task",  TASK_STACK_SIZE, NULL, KEY_TASK_PRIO,  NULL);
+    if (lua_runtime_init() != 0)
+    {
+        ESP_LOGE(TAG, "Lua runtime init failed");
+    }
+
+    /* ---- 6. 启动 CLI（命令行自动运行） ---- */
+
+    cli_init();
+
+    /* ---- 7. 启动应用任务 ---- */
+
+    xTaskCreate(key_task, "key_task", TASK_STACK_SIZE, NULL, KEY_TASK_PRIO, NULL);
     xTaskCreate(temp_task, "temp_task", TASK_STACK_SIZE, NULL, TEMP_TASK_PRIO, NULL);
-    xTaskCreate(ui_task,   "ui_task",   TASK_STACK_SIZE, NULL, UI_TASK_PRIO,   NULL);
+    xTaskCreate(ui_task, "ui_task", TASK_STACK_SIZE, NULL, UI_TASK_PRIO, NULL);
 
     ESP_LOGI(TAG, "System started");
 }

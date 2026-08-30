@@ -2,7 +2,7 @@
  * @file display.c
  * @brief LCD 显示驱动实现（ST7789 + LVGL）
  *
- * 硬件配置（AI-VOX3）：
+ * 硬件配置（xhyOS / ESP32-S3）：
  *   - 控制器：ST7789
  *   - 分辨率：240x240
  *   - 接口：SPI (SPI3_HOST)
@@ -50,6 +50,8 @@ static struct Display g_display;
 static int display_init(void *self)
 {
     struct Display *disp = (struct Display *)self;
+    esp_err_t ret;
+    esp_lcd_panel_io_handle_t io_handle = NULL;
 
     /* ===== 1. 初始化 SPI 总线 ===== */
     spi_bus_config_t bus_cfg = {
@@ -60,10 +62,13 @@ static int display_init(void *self)
         .quadhd_io_num   = -1,
         .max_transfer_sz = LCD_WIDTH * LCD_HEIGHT * 2,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
+    ret = spi_bus_initialize(LCD_SPI_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "SPI 总线初始化失败: %s", esp_err_to_name(ret));
+        return -1;
+    }
 
     /* ===== 2. 创建 LCD Panel IO ===== */
-    esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num      = LCD_PIN_DC,
         .cs_gpio_num      = LCD_PIN_CS,
@@ -73,9 +78,13 @@ static int display_init(void *self)
         .lcd_cmd_bits    = 8,
         .lcd_param_bits  = 8,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
+    ret = esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)LCD_SPI_HOST,
-        &io_config, &io_handle));
+        &io_config, &io_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Panel IO 创建失败: %s", esp_err_to_name(ret));
+        goto err_free_spi;
+    }
 
     /* ===== 3. 创建 ST7789 面板 ===== */
     esp_lcd_panel_dev_config_t panel_config = {
@@ -83,14 +92,33 @@ static int display_init(void *self)
         .bits_per_pixel   = 16,
         .rgb_ele_order    = LCD_RGB_ELEMENT_ORDER_BGR,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(
-        io_handle, &panel_config, &disp->panel_handle));
+    ret = esp_lcd_new_panel_st7789(io_handle, &panel_config, &disp->panel_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ST7789 面板创建失败: %s", esp_err_to_name(ret));
+        goto err_del_io;
+    }
 
     /* ===== 4. 初始化面板 ===== */
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(disp->panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel_handle, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel_handle, true));
+    ret = esp_lcd_panel_reset(disp->panel_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "面板复位失败: %s", esp_err_to_name(ret));
+        goto err_del_panel;
+    }
+    ret = esp_lcd_panel_init(disp->panel_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "面板初始化失败: %s", esp_err_to_name(ret));
+        goto err_del_panel;
+    }
+    ret = esp_lcd_panel_invert_color(disp->panel_handle, true);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "颜色反转设置失败: %s", esp_err_to_name(ret));
+        goto err_del_panel;
+    }
+    ret = esp_lcd_panel_disp_on_off(disp->panel_handle, true);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "显示开启失败: %s", esp_err_to_name(ret));
+        goto err_del_panel;
+    }
 
     disp->width  = LCD_WIDTH;
     disp->height = LCD_HEIGHT;
@@ -103,7 +131,11 @@ static int display_init(void *self)
         .task_max_sleep_ms  = 500,
         .timer_period_ms    = 5,
     };
-    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+    ret = lvgl_port_init(&lvgl_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "LVGL 端口初始化失败: %s", esp_err_to_name(ret));
+        goto err_del_panel;
+    }
 
     /* ===== 6. 将 LCD 面板注册到 LVGL ===== */
     /*
@@ -134,11 +166,25 @@ static int display_init(void *self)
             .swap_bytes  = true,    /* RGB565 字节交换（SPI 显示必需） */
         },
     };
-    lvgl_port_add_disp(&disp_cfg);
+    lv_display_t *lv_disp = lvgl_port_add_disp(&disp_cfg);
+    if (lv_disp == NULL) {
+        ESP_LOGE(TAG, "LVGL 显示注册失败");
+        lvgl_port_deinit();
+        goto err_del_panel;
+    }
 
     ESP_LOGI(TAG, "显示初始化完成，%dx%d，LVGL 已接管",
              disp->width, disp->height);
     return 0;
+
+err_del_panel:
+    esp_lcd_panel_del(disp->panel_handle);
+    disp->panel_handle = NULL;
+err_del_io:
+    esp_lcd_panel_io_del(io_handle);
+err_free_spi:
+    spi_bus_free(LCD_SPI_HOST);
+    return -1;
 }
 
 static int display_write(void *self, const void *buf, size_t len)

@@ -42,6 +42,12 @@ struct list_head {
  *
  * 每个设备驱动必须实现此结构体中的函数指针，
  * 以便框架进行统一管理和调用。
+ *
+ * 返回值约定：
+ *   - init:   0 成功，-1 失败
+ *   - read:   >0 实际读取字节数，-1 失败
+ *   - write:  >0 实际写入字节数，-1 失败
+ *   - deinit: 0 成功，-1 失败
  */
 struct DeviceOps {
     int  (*init)(void *self);                               ///< 初始化设备
@@ -51,16 +57,29 @@ struct DeviceOps {
 };
 
 /**
+ * @brief 设备运行状态
+ *
+ * 由框架在 init/deinit 时自动维护，上层可通过此字段
+ * 判断设备是否可用，避免对未初始化或出错的设备操作。
+ */
+enum DeviceState {
+    DEV_UNINIT = 0,  ///< 未初始化（注册后、init 前）
+    DEV_READY,       ///< 已初始化、可用
+    DEV_ERROR,       ///< 初始化失败或已出错
+};
+
+/**
  * @brief 设备结构体
  *
- * 描述一个具体设备，包含名称、私有数据、操作表和链表节点。
+ * 描述一个具体设备，包含名称、私有数据、操作表、状态和链表节点。
  * 所有设备通过 device_register() 注册到全局设备链表中。
  */
 struct Device {
-    const char *name;             ///< 设备名称（唯一标识）
-    void *data;                   ///< 指向设备私有数据
-    const struct DeviceOps *ops;  ///< 设备操作表指针
-    struct list_head node;        ///< 链表节点（用于设备链表）
+    const char *name;              ///< 设备名称（唯一标识）
+    void *data;                    ///< 指向设备私有数据
+    const struct DeviceOps *ops;   ///< 设备操作表指针
+    enum DeviceState state;         ///< 设备运行状态（框架维护）
+    struct list_head node;         ///< 链表节点（用于设备链表）
 };
 
 /**
@@ -79,12 +98,34 @@ struct Device *device_find(const char *name);
 
 /**
  * @brief 初始化所有已注册设备
- * @return 0 成功；-1 失败（互斥锁未创建）
  *
  * 遍历设备链表，对每个设备调用其 ops->init。
- * 若某设备初始化失败，记录错误但继续初始化其他设备。
+ * 若某设备初始化失败，记录错误并设置状态为 DEV_ERROR，但继续初始化其他设备。
+ *
+ * @return 0 全部成功；>0 失败设备数；-1 框架错误（互斥锁未创建）
  */
 int device_init_all(void);
+
+/**
+ * @brief 反初始化所有已注册设备
+ *
+ * 遍历设备链表，对每个处于 DEV_READY 状态的设备调用其 ops->deinit。
+ * 用于系统休眠、OTA 升级前优雅关闭外设。
+ *
+ * @return 0 全部成功；>0 失败设备数；-1 框架错误
+ */
+int device_deinit_all(void);
+
+/**
+ * @brief 注销设备
+ *
+ * 从全局设备链表和哈希表中移除指定设备。
+ * 调用者负责释放设备结构体本身及其私有数据的内存。
+ *
+ * @param dev 指向待注销设备的指针
+ * @return 0 成功；-1 失败（参数无效或设备不存在）
+ */
+int device_unregister(struct Device *dev);
 
 /**
  * @brief 遍历所有已注册设备

@@ -22,23 +22,23 @@ static int ws2812b_init(void *self)
 {
     struct ws2812b *led = (struct ws2812b *)self;
 
-    led->red   = 0;
+    led->red = 0;
     led->green = 0;
-    led->blue  = 0;
+    led->blue = 0;
 
     led_strip_config_t strip_config = {
-        .strip_gpio_num           = WS2812B_GPIO,
-        .max_leds                 = WS2812B_NUM_LEDS,
-        .led_model                = LED_MODEL_WS2812,
-        .color_component_format   = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+        .strip_gpio_num = WS2812B_GPIO,
+        .max_leds = WS2812B_NUM_LEDS,
+        .led_model = LED_MODEL_WS2812,
+        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
         .flags = {
             .invert_out = false,
         },
     };
 
     led_strip_rmt_config_t rmt_config = {
-        .clk_src           = RMT_CLK_SRC_DEFAULT,
-        .resolution_hz     = 10 * 1000 * 1000,  /* 10MHz */
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = 10 * 1000 * 1000, /* 10MHz */
         .mem_block_symbols = 64,
         .flags = {
             .with_dma = false,
@@ -48,7 +48,8 @@ static int ws2812b_init(void *self)
     esp_err_t ret = led_strip_new_rmt_device(
         &strip_config, &rmt_config,
         (led_strip_handle_t *)&led->strip_handle);
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         ESP_LOGE(TAG, "LED strip init failed: %s", esp_err_to_name(ret));
         return -1;
     }
@@ -80,21 +81,23 @@ static int ws2812b_write(void *self, const void *buf, size_t len)
         return -1;
 
     const uint8_t *rgb = (const uint8_t *)buf;
-    led->red   = rgb[0];
+    led->red = rgb[0];
     led->green = rgb[1];
-    led->blue  = rgb[2];
+    led->blue = rgb[2];
 
     led_strip_handle_t handle = (led_strip_handle_t)led->strip_handle;
 
     esp_err_t ret = led_strip_set_pixel(handle, 0,
                                         led->red, led->green, led->blue);
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         ESP_LOGE(TAG, "LED set pixel failed: %s", esp_err_to_name(ret));
         return -1;
     }
 
     ret = led_strip_refresh(handle);
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         ESP_LOGE(TAG, "LED refresh failed: %s", esp_err_to_name(ret));
         return -1;
     }
@@ -106,7 +109,8 @@ static int ws2812b_deinit(void *self)
 {
     struct ws2812b *led = (struct ws2812b *)self;
 
-    if (led->strip_handle) {
+    if (led->strip_handle)
+    {
         led_strip_del((led_strip_handle_t)led->strip_handle);
         led->strip_handle = NULL;
     }
@@ -114,16 +118,16 @@ static int ws2812b_deinit(void *self)
 }
 
 static const struct DeviceOps ws2812b_ops = {
-    .init   = ws2812b_init,
-    .read   = ws2812b_read,
-    .write  = ws2812b_write,
+    .init = ws2812b_init,
+    .read = ws2812b_read,
+    .write = ws2812b_write,
     .deinit = ws2812b_deinit,
 };
 
 static struct Device g_ws2812b_device = {
     .name = "ws2812b",
     .data = &g_ws2812b,
-    .ops  = &ws2812b_ops,
+    .ops = &ws2812b_ops,
 };
 
 struct Device *Ws2812b_get_device(void)
