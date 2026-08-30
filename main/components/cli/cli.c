@@ -17,6 +17,8 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "esp_console.h"
+#include "linenoise/linenoise.h"
 #include "lua.h"
 #include "lauxlib.h"
 #include "lua_runtime.h"
@@ -31,7 +33,7 @@ static const char *TAG = "cli";
 #define CLI_MAX_CMDS 32  /* 最多注册命令数 */
 #define CLI_TASK_STACK 4096
 #define CLI_TASK_PRIO 2
-#define CLI_PROMPT "aivox> "
+#define CLI_PROMPT "xhyOS> "
 
 /* ===== 命令表结构 ===== */
 
@@ -239,7 +241,8 @@ static int cmd_info(int argc, char *argv[])
     printf("  Chip:         ESP32-S3\r\n");
     printf("  Free heap:    %lu bytes\r\n", (unsigned long)esp_get_free_heap_size());
     printf("  Free PSRAM:   %lu bytes\r\n", (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    printf("  Uptime:       %lu ms\r\n", (unsigned long)(xTaskGetTickCount() * portTICK_PERIOD_MS));
+    printf("  Uptime:       %u ms\r\n",
+           (unsigned)(xTaskGetTickCount() * portTICK_PERIOD_MS));
 
     int count = 0;
     device_for_each(count_devices_cb, &count);
@@ -344,7 +347,7 @@ static void cli_task(void *arg)
 
     printf("\r\n");
     printf("========================================\r\n");
-    printf("  AI-VOX3 Shell (Lua powered)\r\n");
+    printf("  xhyOS Shell (Lua powered)\r\n");
     printf("  Type 'help' for commands\r\n");
     printf("========================================\r\n");
     printf("\r\n");
@@ -361,28 +364,41 @@ static void cli_task(void *arg)
         }
     }
 
+    /* linenoise 初始化：禁用组合键，避免终端兼容性问题 */
+    // linenoiseSetDontUseComboKeys(true);
+    linenoiseSetMultiLine(0); /* 单行模式，适配 USB Serial JTAG */
+
+    /*
+     * 核心循环：使用 linenoise 替代裸 fgets。
+     *
+     * linenoise 内部会阻塞等待输入，不会像 fgets 那样
+     * 在无数据时立即返回 NULL 导致提示符洪泛。
+     * 如果 linenoise 返回 NULL（EOF 或 USB 断开），
+     * 则延时后重试，不会疯狂打印提示符。
+     */
     while (1)
     {
-        printf("%s", CLI_PROMPT);
-        fflush(stdout);
+        char *ln = linenoise(CLI_PROMPT);
 
-        if (fgets(line, sizeof(line), stdin) == NULL)
+        if (ln == NULL)
         {
-            vTaskDelay(pdMS_TO_TICKS(100));
+            /* 控制台未就绪或连接断开，等待后重试 */
+            vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
 
-        /* 去掉末尾换行 */
-        int len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+        if (ln[0] != '\0')
         {
-            line[--len] = '\0';
-        }
+            /* 添加到历史记录（支持上下键回溯） */
+            linenoiseHistoryAdd(ln);
 
-        if (len > 0)
-        {
+            /* 执行命令 */
+            strncpy(line, ln, CLI_BUF_SIZE - 1);
+            line[CLI_BUF_SIZE - 1] = '\0';
             cli_exec_line(line);
         }
+
+        linenoiseFree(ln);
     }
 }
 
@@ -392,6 +408,18 @@ static void cli_task(void *arg)
 
 int cli_init(void)
 {
+    /* 初始化 esp_console：提供行缓冲、退格键编辑等基础能力 */
+    esp_console_config_t console_cfg = {
+        .max_cmdline_length = CLI_BUF_SIZE,
+        .max_cmdline_args = CLI_MAX_ARGS,
+    };
+    esp_err_t err = esp_console_init(&console_cfg);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "esp_console_init failed: %s", esp_err_to_name(err));
+        return -1;
+    }
+
     register_builtin_cmds();
 
     /* 如果 Lua 运行时已就绪，注册 cli Lua 模块 */
@@ -414,6 +442,6 @@ int cli_init(void)
         return -1;
     }
 
-    ESP_LOGI(TAG, "CLI initialized");
+    ESP_LOGI(TAG, "CLI initialized (linenoise + esp_console)");
     return 0;
 }

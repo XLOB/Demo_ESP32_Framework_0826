@@ -8,4 +8,5 @@ idf_component_register(
         lua
         framework
         fatfs
+        console
 )

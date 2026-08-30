@@ -31,7 +31,7 @@
 
 #include "components/command_handler.h"
 #include "lua_runtime.h"
-#include "cli.h"
+// #include "cli.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -146,7 +146,7 @@ void app_main(void)
 
     /* ---- 6. 启动 CLI（命令行自动运行） ---- */
 
-    cli_init();
+    //  cli_init();
 
     /* ---- 7. 启动应用任务 ---- */
 
